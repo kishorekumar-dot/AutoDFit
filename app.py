@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import random
-import matplotlib.pyplot as plt
 import io
 import time
 import warnings
@@ -248,10 +247,8 @@ if uploaded_file:
         st.metric("Mean Accuracy", f"{mean_acc*100:.2f}%")
         st.metric("Std Deviation", f"{std_acc*100:.2f}%")
 
-        fig, ax = plt.subplots()
-        ax.hist(scores, bins=12)
-        ax.set_title("Accuracy Distribution")
-        st.pyplot(fig)
+        st.subheader("Accuracy Distribution")
+        st.bar_chart(pd.DataFrame(scores, columns=["Accuracy"]))
 
         st.divider()
         st.subheader("Dataset Fitness Score")
@@ -291,5 +288,6 @@ if uploaded_file:
             file_name="AutoDFit_Report.pdf",
             mime="application/pdf"
         )
+
 
         status.success("Analysis Completed Successfully")
