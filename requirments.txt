@@ -1,6 +1,6 @@
-streamlit
-pandas
-numpy
-scikit-learn
-deap
-reportlab
+streamlit==1.54.0
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.4.2
+deap==1.4.1
+reportlab==4.1.0
