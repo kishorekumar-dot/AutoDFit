@@ -1,8 +1,11 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import time
 import io
+import random
 
+# ML imports
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
@@ -17,58 +20,121 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from sklearn.metrics import accuracy_score, r2_score
 
+# PDF
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
+# Genetic Algorithm
 from deap import base, creator, tools, algorithms
-import random
 
-# ------------------------------
-# UI CONFIG
-# ------------------------------
-st.set_page_config(layout="wide")
+# =====================================================
+# LABEL ENCODER WRAPPER (DEFINED BEFORE USE)
+# =====================================================
+class LabelEncoderWrapper:
+    def fit(self, X, y=None):
+        self.encoders = {}
+        for i in range(X.shape[1]):
+            le = LabelEncoder()
+            X[:, i] = le.fit_transform(X[:, i])
+            self.encoders[i] = le
+        return self
+
+    def transform(self, X):
+        for i in range(X.shape[1]):
+            X[:, i] = self.encoders[i].transform(X[:, i])
+        return X
+
+
+# =====================================================
+# PAGE CONFIG + PREMIUM UI
+# =====================================================
+st.set_page_config(page_title="AutoDFit", layout="wide")
 
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"] {
-    background-color: #0F1117;
+    background: linear-gradient(135deg,#0F1117,#151823,#1B1E2B);
 }
 .stMetric {
-    background-color:#1A1C23;
-    padding:12px;
-    border-radius:10px;
+    background: rgba(255,255,255,0.05);
+    backdrop-filter: blur(12px);
+    padding:15px;
+    border-radius:12px;
+}
+.hero {
+    text-align:center;
+    font-size:42px;
+    font-weight:700;
+    background: linear-gradient(90deg,#00F5FF,#7B61FF);
+    -webkit-background-clip:text;
+    -webkit-text-fill-color:transparent;
+}
+.subtitle {
+    text-align:center;
+    color:#9CA3AF;
+    font-size:18px;
+}
+.logo-container {
+    text-align:center;
+    animation: fadeIn 1.5s ease-in-out;
+}
+@keyframes fadeIn {
+    from {opacity:0; transform:scale(0.85);}
+    to {opacity:1; transform:scale(1);}
 }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🚀 AutoDFit — Intelligent AutoML Platform")
+# =====================================================
+# SPLASH LOGO
+# =====================================================
+st.markdown('<div class="logo-container">', unsafe_allow_html=True)
+st.image("autodfit_logo.svg", width=250)
+st.markdown('</div>', unsafe_allow_html=True)
+time.sleep(1)
+st.divider()
 
-# ------------------------------
-# Upload Dataset
-# ------------------------------
-file = st.file_uploader("Upload Dataset", type=["csv"])
+# =====================================================
+# HERO SECTION
+# =====================================================
+st.markdown('<div class="hero">AI-Powered Dataset Intelligence</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Automated preprocessing • Model selection • Optimization • Insights</div>', unsafe_allow_html=True)
+
+st.write("")
+st.write("")
+
+# =====================================================
+# DATA UPLOAD
+# =====================================================
+file = st.file_uploader("Upload CSV Dataset", type=["csv"])
 
 if file:
 
     df = pd.read_csv(file)
-    st.success("Dataset Loaded")
+    st.success("Dataset Loaded Successfully")
 
-    # ---------------- EDA ----------------
+    # =====================================================
+    # DATASET OVERVIEW
+    # =====================================================
     st.header("📊 Dataset Overview")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Rows", df.shape[0])
     c2.metric("Columns", df.shape[1])
-    c3.metric("Missing Values", df.isnull().sum().sum())
+    c3.metric("Missing Values", int(df.isnull().sum().sum()))
 
     st.dataframe(df.head())
 
-    # ---------------- Target ----------------
+    # =====================================================
+    # TARGET
+    # =====================================================
     target = st.selectbox("Select Target Column", df.columns)
     X = df.drop(columns=[target])
     y = df[target]
 
-    # ---------------- Problem Detection ----------------
+    # =====================================================
+    # PROBLEM DETECTION
+    # =====================================================
     if y.dtype == "object" or y.nunique() < 20:
         problem = "classification"
     else:
@@ -76,18 +142,48 @@ if file:
 
     st.success(f"Detected Problem Type: {problem}")
 
-    # ---------------- Preprocessing ----------------
+    # =====================================================
+    # PIPELINE ANIMATION
+    # =====================================================
+    st.header("⚙ AI Processing Pipeline")
+
+    progress = st.progress(0)
+    status = st.empty()
+
+    steps = [
+        "Cleaning dataset...",
+        "Handling missing values...",
+        "Encoding categorical features...",
+        "Scaling numerical features...",
+        "Splitting data...",
+        "Training models...",
+        "Running genetic optimization...",
+        "Evaluating performance...",
+        "Preparing dashboard..."
+    ]
+
+    for i, step in enumerate(steps):
+        status.info(step)
+        progress.progress((i + 1) / len(steps))
+        time.sleep(0.4)
+
+    status.success("Processing Complete ✔")
+    st.divider()
+
+    # =====================================================
+    # PREPROCESSING
+    # =====================================================
     numeric_cols = X.select_dtypes(include=np.number).columns
     cat_cols = X.select_dtypes(exclude=np.number).columns
 
     num_pipe = Pipeline([
-        ("impute", SimpleImputer(strategy="mean")),
-        ("scale", StandardScaler())
+        ("imputer", SimpleImputer(strategy="mean")),
+        ("scaler", StandardScaler())
     ])
 
     cat_pipe = Pipeline([
-        ("impute", SimpleImputer(strategy="most_frequent")),
-        ("encode", LabelEncoderWrapper())
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("encoder", LabelEncoderWrapper())
     ])
 
     pre = ColumnTransformer([
@@ -102,7 +198,9 @@ if file:
     X_train = pre.fit_transform(X_train)
     X_test = pre.transform(X_test)
 
-    # ---------------- Models ----------------
+    # =====================================================
+    # MODELS
+    # =====================================================
     if problem == "classification":
         models = {
             "Logistic": LogisticRegression(max_iter=500),
@@ -120,23 +218,26 @@ if file:
             "DecisionTree": DecisionTreeRegressor()
         }
 
-    # ---------------- Model Training ----------------
+    # =====================================================
+    # MODEL TRAINING
+    # =====================================================
     st.header("🤖 Model Comparison")
 
     scores = {}
     trained_models = {}
 
-    for name, model in models.items():
-        model.fit(X_train, y_train)
-        pred = model.predict(X_test)
+    with st.spinner("Training models..."):
+        for name, model in models.items():
+            model.fit(X_train, y_train)
+            pred = model.predict(X_test)
 
-        if problem == "classification":
-            score = accuracy_score(y_test, pred)
-        else:
-            score = r2_score(y_test, pred)
+            if problem == "classification":
+                score = accuracy_score(y_test, pred)
+            else:
+                score = r2_score(y_test, pred)
 
-        scores[name] = score
-        trained_models[name] = model
+            scores[name] = score
+            trained_models[name] = model
 
     result_df = pd.DataFrame(scores.items(), columns=["Model","Score"]).sort_values(by="Score",ascending=False)
     st.dataframe(result_df)
@@ -146,20 +247,25 @@ if file:
     best_model = trained_models[best_model_name]
     best_score = result_df.iloc[0]["Score"]
 
-    st.success(f"Best Model: {best_model_name}")
-    st.success(f"Best Score: {best_score:.3f}")
+    st.header("🏆 Best Model")
+    colA, colB = st.columns(2)
+    colA.metric("Model", best_model_name)
+    colB.metric("Score", f"{best_score:.3f}")
 
-    # ---------------- Feature Importance ----------------
+    # =====================================================
+    # FEATURE IMPORTANCE
+    # =====================================================
     st.header("📌 Feature Importance")
 
     if "RandomForest" in trained_models:
         rf = trained_models["RandomForest"]
         if hasattr(rf, "feature_importances_"):
-            imp = pd.Series(rf.feature_importances_)
-            st.bar_chart(imp)
+            st.bar_chart(pd.Series(rf.feature_importances_))
 
-    # ---------------- Genetic Algorithm ----------------
-    st.header("🧬 Genetic Algorithm Feature Selection")
+    # =====================================================
+    # GENETIC ALGORITHM FEATURE SELECTION
+    # =====================================================
+    st.header("🧬 Genetic Algorithm Optimization")
 
     n_features = X_train.shape[1]
 
@@ -192,9 +298,11 @@ if file:
     algorithms.eaSimple(pop, toolbox, cxpb=0.6, mutpb=0.2, ngen=5, verbose=False)
 
     best_ind = tools.selBest(pop,1)[0]
-    st.write("Selected Features:", sum(best_ind))
+    st.success(f"Selected Features: {sum(best_ind)}")
 
-    # ---------------- PDF REPORT ----------------
+    # =====================================================
+    # PDF REPORT
+    # =====================================================
     st.header("📄 Download Report")
 
     def make_pdf():
@@ -212,19 +320,3 @@ if file:
         return buf
 
     st.download_button("Download PDF", make_pdf(), "AutoDFit_Report.pdf")
-
-
-# ---------------- Label Encoder Wrapper ----------------
-class LabelEncoderWrapper:
-    def fit(self, X, y=None):
-        self.enc = {}
-        for i in range(X.shape[1]):
-            le = LabelEncoder()
-            X[:,i] = le.fit_transform(X[:,i])
-            self.enc[i] = le
-        return self
-
-    def transform(self, X):
-        for i in range(X.shape[1]):
-            X[:,i] = self.enc[i].transform(X[:,i])
-        return X
