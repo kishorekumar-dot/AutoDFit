@@ -330,12 +330,13 @@ if file:
             
 return buffer
             
-    st.download_button(
-        label="📄 Download Full Report",
-        data=generate_pdf(),
-        file_name="AutoDFit_Report.pdf",
-        mime="application/pdf"
-    )
+st.download_button(
+    label="📄 Download Full Report",
+    data=generate_pdf(),
+    file_name="AutoDFit_Report.pdf",
+    mime="application/pdf"
+)
+
 
 
 
