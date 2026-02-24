@@ -1,293 +1,230 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random
 import io
-import time
-import warnings
-
-warnings.filterwarnings("ignore")
 
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
 
-from deap import base, creator, tools, algorithms
+from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.svm import SVC, SVR
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+from sklearn.metrics import accuracy_score, r2_score
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
 
-# -------------------------------------------------
-# Page Config
-# -------------------------------------------------
-st.set_page_config(page_title="AutoDFit", layout="wide")
+from deap import base, creator, tools, algorithms
+import random
 
-# -------------------------------------------------
-# Minimal Dark Theme
-# -------------------------------------------------
+# ------------------------------
+# UI CONFIG
+# ------------------------------
+st.set_page_config(layout="wide")
+
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"] {
     background-color: #0F1117;
 }
-h1, h2, h3 {
-    font-weight: 600;
-}
 .stMetric {
-    background-color: #1A1C23;
-    padding: 12px;
-    border-radius: 8px;
+    background-color:#1A1C23;
+    padding:12px;
+    border-radius:10px;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# -------------------------------------------------
-# Splash Screen
-# -------------------------------------------------
-if "loaded" not in st.session_state:
-    splash = st.empty()
-    splash.markdown("""
-    <div style='text-align:center;margin-top:200px'>
-        <h1>AutoDFit</h1>
-        <h3>Initializing Intelligent Dataset Analyzer...</h3>
-    </div>
-    """, unsafe_allow_html=True)
-    time.sleep(2)
-    splash.empty()
-    st.session_state.loaded = True
+st.title("🚀 AutoDFit — Intelligent AutoML Platform")
 
-# -------------------------------------------------
-# Title
-# -------------------------------------------------
-st.title("AutoDFit — Intelligent Dataset Fitness Analyzer")
+# ------------------------------
+# Upload Dataset
+# ------------------------------
+file = st.file_uploader("Upload Dataset", type=["csv"])
 
-# -------------------------------------------------
-# Sidebar
-# -------------------------------------------------
-st.sidebar.header("Configuration")
+if file:
 
-uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
+    df = pd.read_csv(file)
+    st.success("Dataset Loaded")
 
-model_choice = st.sidebar.selectbox(
-    "Model",
-    ["Random Forest", "Logistic Regression", "SVM"]
-)
+    # ---------------- EDA ----------------
+    st.header("📊 Dataset Overview")
 
-monte_runs = st.sidebar.slider("Monte Carlo Runs", 20, 100, 50)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Rows", df.shape[0])
+    c2.metric("Columns", df.shape[1])
+    c3.metric("Missing Values", df.isnull().sum().sum())
 
-# -------------------------------------------------
-# Main App
-# -------------------------------------------------
-if uploaded_file:
-
-    df = pd.read_csv(uploaded_file)
-    st.subheader("Dataset Preview")
     st.dataframe(df.head())
 
-    target_column = st.selectbox("Select Target Column", df.columns)
+    # ---------------- Target ----------------
+    target = st.selectbox("Select Target Column", df.columns)
+    X = df.drop(columns=[target])
+    y = df[target]
 
-    if st.button("Analyze Dataset"):
+    # ---------------- Problem Detection ----------------
+    if y.dtype == "object" or y.nunique() < 20:
+        problem = "classification"
+    else:
+        problem = "regression"
 
-        # -----------------------------------------
-        # Clean Animated Processing
-        # -----------------------------------------
-        status = st.empty()
-        progress = st.progress(0)
+    st.success(f"Detected Problem Type: {problem}")
 
-        steps = [
-            "Loading Dataset",
-            "Data Profiling",
-            "Training Baseline Model",
-            "Running Genetic Algorithm",
-            "Monte Carlo Simulation",
-            "Computing Fitness Score",
-            "Generating Report"
-        ]
+    # ---------------- Preprocessing ----------------
+    numeric_cols = X.select_dtypes(include=np.number).columns
+    cat_cols = X.select_dtypes(exclude=np.number).columns
 
-        for i, step in enumerate(steps):
-            status.write(f"Processing: {step}...")
-            progress.progress((i + 1) / len(steps))
-            time.sleep(0.25)
+    num_pipe = Pipeline([
+        ("impute", SimpleImputer(strategy="mean")),
+        ("scale", StandardScaler())
+    ])
 
-        # -----------------------------------------
-        # Data Profiling
-        # -----------------------------------------
-        missing_percentage = df.isnull().mean().mean() * 100
-        rows, cols = df.shape
+    cat_pipe = Pipeline([
+        ("impute", SimpleImputer(strategy="most_frequent")),
+        ("encode", LabelEncoderWrapper())
+    ])
 
-        df = df.dropna()
-        X = df.drop(columns=[target_column])
-        y = df[target_column]
+    pre = ColumnTransformer([
+        ("num", num_pipe, numeric_cols),
+        ("cat", cat_pipe, cat_cols)
+    ])
 
-        for col in X.columns:
-            if X[col].dtype == "object":
-                X[col] = LabelEncoder().fit_transform(X[col])
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
 
-        if y.dtype == "object":
-            y = LabelEncoder().fit_transform(y)
+    X_train = pre.fit_transform(X_train)
+    X_test = pre.transform(X_test)
 
-        # -----------------------------------------
-        # Model Selection
-        # -----------------------------------------
-        if model_choice == "Random Forest":
-            model = RandomForestClassifier(n_estimators=50)
-        elif model_choice == "Logistic Regression":
-            model = LogisticRegression(max_iter=500)
+    # ---------------- Models ----------------
+    if problem == "classification":
+        models = {
+            "Logistic": LogisticRegression(max_iter=500),
+            "RandomForest": RandomForestClassifier(),
+            "SVM": SVC(),
+            "KNN": KNeighborsClassifier(),
+            "DecisionTree": DecisionTreeClassifier()
+        }
+    else:
+        models = {
+            "Linear": LinearRegression(),
+            "RandomForest": RandomForestRegressor(),
+            "SVR": SVR(),
+            "KNN": KNeighborsRegressor(),
+            "DecisionTree": DecisionTreeRegressor()
+        }
+
+    # ---------------- Model Training ----------------
+    st.header("🤖 Model Comparison")
+
+    scores = {}
+    trained_models = {}
+
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        pred = model.predict(X_test)
+
+        if problem == "classification":
+            score = accuracy_score(y_test, pred)
         else:
-            model = SVC()
+            score = r2_score(y_test, pred)
 
-        # -----------------------------------------
-        # Baseline Model
-        # -----------------------------------------
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42
-        )
+        scores[name] = score
+        trained_models[name] = model
 
-        model.fit(X_train, y_train)
-        baseline_acc = accuracy_score(y_test, model.predict(X_test))
+    result_df = pd.DataFrame(scores.items(), columns=["Model","Score"]).sort_values(by="Score",ascending=False)
+    st.dataframe(result_df)
+    st.bar_chart(result_df.set_index("Model"))
 
-        # -----------------------------------------
-        # GA Feature Selection
-        # -----------------------------------------
-        num_features = X.shape[1]
+    best_model_name = result_df.iloc[0]["Model"]
+    best_model = trained_models[best_model_name]
+    best_score = result_df.iloc[0]["Score"]
 
-        if not hasattr(creator, "FitnessMax"):
-            creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-            creator.create("Individual", list, fitness=creator.FitnessMax)
+    st.success(f"Best Model: {best_model_name}")
+    st.success(f"Best Score: {best_score:.3f}")
 
-        toolbox = base.Toolbox()
-        toolbox.register("attr_bool", random.randint, 0, 1)
-        toolbox.register("individual", tools.initRepeat, creator.Individual,
-                         toolbox.attr_bool, n=num_features)
-        toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+    # ---------------- Feature Importance ----------------
+    st.header("📌 Feature Importance")
 
-        def eval_individual(ind):
-            selected = [i for i in range(len(ind)) if ind[i] == 1]
-            if len(selected) == 0:
-                return 0,
-            X_sel = X.iloc[:, selected]
-            X_tr, X_te, y_tr, y_te = train_test_split(
-                X_sel, y, test_size=0.2, random_state=42
-            )
-            model.fit(X_tr, y_tr)
-            return accuracy_score(y_te, model.predict(X_te)),
+    if "RandomForest" in trained_models:
+        rf = trained_models["RandomForest"]
+        if hasattr(rf, "feature_importances_"):
+            imp = pd.Series(rf.feature_importances_)
+            st.bar_chart(imp)
 
-        toolbox.register("evaluate", eval_individual)
-        toolbox.register("mate", tools.cxTwoPoint)
-        toolbox.register("mutate", tools.mutFlipBit, indpb=0.05)
-        toolbox.register("select", tools.selTournament, tournsize=3)
+    # ---------------- Genetic Algorithm ----------------
+    st.header("🧬 Genetic Algorithm Feature Selection")
 
-        pop = toolbox.population(n=25)
-        algorithms.eaSimple(pop, toolbox, cxpb=0.6, mutpb=0.2, ngen=8, verbose=False)
+    n_features = X_train.shape[1]
 
-        best = tools.selBest(pop, 1)[0]
-        selected_features = [i for i in range(len(best)) if best[i] == 1]
-        X_best = X.iloc[:, selected_features] if selected_features else X
+    if not hasattr(creator, "FitnessMax"):
+        creator.create("FitnessMax", base.Fitness, weights=(1.0,))
+        creator.create("Individual", list, fitness=creator.FitnessMax)
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_best, y, test_size=0.2, random_state=42
-        )
-        model.fit(X_train, y_train)
-        optimized_acc = accuracy_score(y_test, model.predict(X_test))
+    toolbox = base.Toolbox()
+    toolbox.register("attr_bool", random.randint, 0, 1)
+    toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_bool, n=n_features)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
-        # -----------------------------------------
-        # Monte Carlo Simulation
-        # -----------------------------------------
-        scores = []
-        for _ in range(monte_runs):
-            X_tr, X_te, y_tr, y_te = train_test_split(
-                X_best, y, test_size=0.2,
-                random_state=random.randint(1, 10000)
-            )
-            model.fit(X_tr, y_tr)
-            scores.append(accuracy_score(y_te, model.predict(X_te)))
+    def evalGA(ind):
+        sel = [i for i,v in enumerate(ind) if v==1]
+        if not sel:
+            return 0,
+        X_sel = X_train[:,sel]
+        model = RandomForestClassifier() if problem=="classification" else RandomForestRegressor()
+        model.fit(X_sel, y_train)
+        pred = model.predict(X_test[:,sel])
+        score = accuracy_score(y_test,pred) if problem=="classification" else r2_score(y_test,pred)
+        return score,
 
-        mean_acc = np.mean(scores)
-        std_acc = np.std(scores)
+    toolbox.register("evaluate", evalGA)
+    toolbox.register("mate", tools.cxTwoPoint)
+    toolbox.register("mutate", tools.mutFlipBit, indpb=0.05)
+    toolbox.register("select", tools.selTournament, tournsize=3)
 
-        # -----------------------------------------
-        # Fitness Score
-        # -----------------------------------------
-        completeness = 1 - (missing_percentage / 100)
-        stability = 1 - std_acc
+    pop = toolbox.population(n=20)
+    algorithms.eaSimple(pop, toolbox, cxpb=0.6, mutpb=0.2, ngen=5, verbose=False)
 
-        fitness = (
-            0.3 * completeness +
-            0.3 * mean_acc +
-            0.2 * optimized_acc +
-            0.2 * stability
-        )
-        fitness = max(0, min(fitness, 1))
+    best_ind = tools.selBest(pop,1)[0]
+    st.write("Selected Features:", sum(best_ind))
 
-        # -----------------------------------------
-        # Display Results
-        # -----------------------------------------
-        st.divider()
-        st.subheader("Dataset Overview")
+    # ---------------- PDF REPORT ----------------
+    st.header("📄 Download Report")
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Rows", rows)
-        c2.metric("Features", cols - 1)
-        c3.metric("Missing %", f"{missing_percentage:.2f}")
+    def make_pdf():
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf)
+        style = getSampleStyleSheet()
+        elems = []
+        elems.append(Paragraph("AutoDFit Analysis Report", style["Title"]))
+        elems.append(Spacer(1,12))
+        elems.append(Paragraph(f"Problem Type: {problem}", style["Normal"]))
+        elems.append(Paragraph(f"Best Model: {best_model_name}", style["Normal"]))
+        elems.append(Paragraph(f"Score: {best_score:.3f}", style["Normal"]))
+        doc.build(elems)
+        buf.seek(0)
+        return buf
 
-        st.divider()
-        st.subheader("Model Performance")
-
-        c4, c5 = st.columns(2)
-        c4.metric("Baseline Accuracy", f"{baseline_acc*100:.2f}%")
-        c5.metric("Optimized Accuracy", f"{optimized_acc*100:.2f}%")
-
-        st.divider()
-        st.subheader("Monte Carlo Stability")
-
-        st.metric("Mean Accuracy", f"{mean_acc*100:.2f}%")
-        st.metric("Std Deviation", f"{std_acc*100:.2f}%")
-
-        st.subheader("Accuracy Distribution")
-        st.bar_chart(pd.DataFrame(scores, columns=["Accuracy"]))
-
-        st.divider()
-        st.subheader("Dataset Fitness Score")
-        st.progress(fitness)
-        st.write(f"{fitness*100:.2f}/100")
-
-        # -----------------------------------------
-        # PDF Report
-        # -----------------------------------------
-        def generate_pdf():
-            buffer = io.BytesIO()
-            doc = SimpleDocTemplate(buffer)
-            styles = getSampleStyleSheet()
-            elements = []
-
-            elements.append(Paragraph("AutoDFit Dataset Report", styles["Title"]))
-            elements.append(Spacer(1, 0.2 * inch))
-
-            text = f"""
-            Rows: {rows}<br/>
-            Features: {cols - 1}<br/>
-            Missing %: {missing_percentage:.2f}<br/>
-            Baseline Accuracy: {baseline_acc*100:.2f}%<br/>
-            Optimized Accuracy: {optimized_acc*100:.2f}%<br/>
-            Mean Accuracy: {mean_acc*100:.2f}%<br/>
-            Std Dev: {std_acc*100:.2f}%<br/>
-            Dataset Fitness Score: {fitness*100:.2f}/100
-            """
-            elements.append(Paragraph(text, styles["Normal"]))
-            doc.build(elements)
-            buffer.seek(0)
-            return buffer
-
-        st.download_button(
-            "Download PDF Report",
-            generate_pdf(),
-            file_name="AutoDFit_Report.pdf",
-            mime="application/pdf"
-        )
+    st.download_button("Download PDF", make_pdf(), "AutoDFit_Report.pdf")
 
 
-        status.success("Analysis Completed Successfully")
+# ---------------- Label Encoder Wrapper ----------------
+class LabelEncoderWrapper:
+    def fit(self, X, y=None):
+        self.enc = {}
+        for i in range(X.shape[1]):
+            le = LabelEncoder()
+            X[:,i] = le.fit_transform(X[:,i])
+            self.enc[i] = le
+        return self
+
+    def transform(self, X):
+        for i in range(X.shape[1]):
+            X[:,i] = self.enc[i].transform(X[:,i])
+        return X
