@@ -398,6 +398,10 @@ def generate_pdf():
             os.remove(f)
 
     return buffer
+st.download_button(
+    "Download Full Analysis Report",
+    generate_pdf(),
+    "AutoDFit_Full_Report.pdf"
+)
 
-    st.download_button("Download Full Report", generate_pdf(), "report.pdf")
 
