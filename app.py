@@ -5,7 +5,7 @@ import time
 import io
 import random
 
-# ML imports
+# ML
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
@@ -28,7 +28,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from deap import base, creator, tools, algorithms
 
 # =====================================================
-# LABEL ENCODER WRAPPER (DEFINED BEFORE USE)
+# LABEL ENCODER WRAPPER (defined before use)
 # =====================================================
 class LabelEncoderWrapper:
     def fit(self, X, y=None):
@@ -74,24 +74,38 @@ st.markdown("""
     color:#9CA3AF;
     font-size:18px;
 }
-.logo-container {
-    text-align:center;
-    animation: fadeIn 1.5s ease-in-out;
-}
-@keyframes fadeIn {
-    from {opacity:0; transform:scale(0.85);}
-    to {opacity:1; transform:scale(1);}
-}
 </style>
 """, unsafe_allow_html=True)
 
 # =====================================================
-# SPLASH LOGO
+# ANIMATED LOGO (INLINE SVG — DEPLOYMENT SAFE)
 # =====================================================
-st.markdown('<div class="logo-container">', unsafe_allow_html=True)
-st.image("autodfit_logo.svg", width=250)
-st.markdown('</div>', unsafe_allow_html=True)
-time.sleep(1)
+st.markdown("""
+<div style="text-align:center;">
+<svg width="260" height="100" viewBox="0 0 320 120" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#00F5FF"/>
+      <stop offset="100%" stop-color="#7B61FF"/>
+    </linearGradient>
+  </defs>
+
+  <circle cx="60" cy="60" r="26" fill="url(#grad)">
+    <animate attributeName="r" values="22;30;22" dur="2s" repeatCount="indefinite"/>
+  </circle>
+
+  <text x="110" y="70"
+        font-size="34"
+        font-family="Segoe UI, Arial"
+        fill="url(#grad)"
+        font-weight="bold">
+    AutoDFit
+  </text>
+</svg>
+</div>
+""", unsafe_allow_html=True)
+
+time.sleep(0.8)
 st.divider()
 
 # =====================================================
@@ -126,7 +140,7 @@ if file:
     st.dataframe(df.head())
 
     # =====================================================
-    # TARGET
+    # TARGET SELECTION
     # =====================================================
     target = st.selectbox("Select Target Column", df.columns)
     X = df.drop(columns=[target])
@@ -165,7 +179,7 @@ if file:
     for i, step in enumerate(steps):
         status.info(step)
         progress.progress((i + 1) / len(steps))
-        time.sleep(0.4)
+        time.sleep(0.35)
 
     status.success("Processing Complete ✔")
     st.divider()
@@ -244,7 +258,6 @@ if file:
     st.bar_chart(result_df.set_index("Model"))
 
     best_model_name = result_df.iloc[0]["Model"]
-    best_model = trained_models[best_model_name]
     best_score = result_df.iloc[0]["Score"]
 
     st.header("🏆 Best Model")
