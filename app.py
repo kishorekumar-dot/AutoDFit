@@ -328,7 +328,7 @@ if file:
         if os.path.exists(f):
             os.remove(f)
             
-            return buffer
+return buffer
             
     st.download_button(
         label="📄 Download Full Report",
@@ -336,6 +336,7 @@ if file:
         file_name="AutoDFit_Report.pdf",
         mime="application/pdf"
     )
+
 
 
 
