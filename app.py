@@ -260,11 +260,10 @@ if file:
     # PROFESSIONAL MULTI-PAGE PDF REPORT
     # ===============================================================
    def generate_pdf():
-
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer)
-    styles = getSampleStyleSheet()
-    story = []
+       buffer = io.BytesIO()
+       doc = SimpleDocTemplate(buffer)
+       styles = getSampleStyleSheet()
+       story = []
 
     # ================= COVER =================
     story.append(Spacer(1,200))
@@ -410,4 +409,5 @@ if file:
     st.download_button("📄 Download Full Report",
                        generate_pdf(),
                        "AutoDFit_Report.pdf")
+
 
