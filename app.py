@@ -10,6 +10,15 @@ import plotly.graph_objects as go
 import shap
 import os
 
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Image,
+    PageBreak, Table, TableStyle
+)
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.pdfgen import canvas
+from reportlab.platypus import PageTemplate, Frame
+
 from reportlab.platypus import Table, TableStyle
 from reportlab.lib import colors
 from sklearn.model_selection import train_test_split
@@ -30,6 +39,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RL
 from reportlab.lib.styles import getSampleStyleSheet
 
 from deap import base, creator, tools, algorithms
+
 
 # =================================================
 # PAGE
@@ -180,12 +190,39 @@ if file:
         st.bar_chart(trained[best_model].feature_importances_)
 
     # ================= SHAP =================
-    if st.checkbox("Show SHAP Explainability"):
-        explainer=shap.Explainer(trained[best_model], X_train[:200])
-        shap_values=explainer(X_test[:100])
-        fig=plt.figure()
-        shap.summary_plot(shap_values,X_test[:100],show=False)
+  # =====================================================
+# SHAP EXPLAINABILITY (STABLE VERSION)
+# =====================================================
+st.subheader("Model Explainability (SHAP)")
+
+if st.checkbox("Show SHAP analysis"):
+
+    try:
+        model_for_shap = trained[best_model]
+
+        # use small background sample
+        background = X_train[:100]
+
+        # create explainer
+        explainer = shap.Explainer(model_for_shap, background)
+
+        # explain small test sample
+        sample = X_test[:50]
+
+        shap_values = explainer(
+            sample,
+            check_additivity=False   # ⭐ CRITICAL FIX
+        )
+
+        st.write("Feature impact on predictions")
+
+        fig = plt.figure()
+        shap.summary_plot(shap_values, sample, show=False)
         st.pyplot(fig)
+
+    except Exception as e:
+        st.warning("SHAP explanation could not be generated for this model.")
+        st.text(str(e))
 
     # ================= GENETIC ALGORITHM =================
     st.subheader("Genetic Feature Optimization")
@@ -234,174 +271,192 @@ Accuracy: {best_score*100:.2f}%
 Dataset health: {quality_score:.2f}%
 """)
 
+
+def add_header_footer(canvas, doc):
+    canvas.saveState()
+
+    # Header Branding
+    canvas.setFont("Helvetica-Bold", 10)
+    canvas.drawString(40, 800, "AutoDFit AI Analytics Platform")
+
+    # Footer Page Number
+    page_num = canvas.getPageNumber()
+    text = f"Page {page_num}"
+    canvas.setFont("Helvetica", 9)
+    canvas.drawRightString(550, 20, text)
+
+    canvas.restoreState()
+
+
+
     # ================= PDF =================
 
 def generate_pdf():
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer)
+    doc = SimpleDocTemplate(
+        buffer,
+        rightMargin=40,
+        leftMargin=40,
+        topMargin=60,
+        bottomMargin=40
+    )
+
     styles = getSampleStyleSheet()
     story = []
 
     # =====================================================
-    # TITLE
+    # COVER PAGE
     # =====================================================
-    story.append(Paragraph("AutoDFit AI Analysis Report", styles["Title"]))
-    story.append(Spacer(1,20))
-
-    # =====================================================
-    # DATASET SUMMARY
-    # =====================================================
-    story.append(Paragraph("Dataset Summary", styles["Heading2"]))
-    story.append(Paragraph(f"Rows: {r}", styles["Normal"]))
-    story.append(Paragraph(f"Columns: {c}", styles["Normal"]))
-    story.append(Paragraph(f"Missing values: {missing}", styles["Normal"]))
-    story.append(Paragraph(f"Dataset health score: {quality_score:.2f}%", styles["Normal"]))
-    story.append(Spacer(1,20))
+    story.append(Spacer(1, 2*inch))
+    story.append(Paragraph("AutoDFit AI Intelligence Report", styles["Title"]))
+    story.append(Spacer(1, 0.3*inch))
+    story.append(Paragraph("Automated Machine Learning Analysis", styles["Heading2"]))
+    story.append(Spacer(1, 0.5*inch))
+    story.append(Paragraph(f"Generated Report", styles["Normal"]))
+    story.append(Spacer(1, 2*inch))
+    story.append(Paragraph("Confidential – For Academic Use Only", styles["Normal"]))
+    story.append(PageBreak())
 
     # =====================================================
-    # MODEL LEADERBOARD TABLE
+    # TABLE OF CONTENTS
     # =====================================================
-    story.append(Paragraph("Model Performance Comparison", styles["Heading2"]))
+    story.append(Paragraph("Table of Contents", styles["Heading1"]))
+    story.append(Spacer(1, 0.3*inch))
 
-    table_data = [["Model","Score (%)"]]
-    for m,s in scores.items():
-        table_data.append([m, f"{s*100:.2f}"])
+    toc_items = [
+        "1. Executive Summary",
+        "2. Dataset Overview",
+        "3. Model Performance",
+        "4. Visual Analytics",
+        "5. Explainable AI (SHAP)",
+        "6. Optimization Results",
+        "7. Conclusion"
+    ]
 
-    table = Table(table_data)
-    table.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,0),colors.grey),
-        ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-        ("GRID",(0,0),(-1,-1),1,colors.black)
-    ]))
+    for item in toc_items:
+        story.append(Paragraph(item, styles["Normal"]))
+        story.append(Spacer(1, 0.15*inch))
 
-    story.append(table)
-    story.append(Spacer(1,20))
-
-    # =====================================================
-    # BEST MODEL
-    # =====================================================
-    story.append(Paragraph("Best Model", styles["Heading2"]))
-    story.append(Paragraph(f"Model: {best_model}", styles["Normal"]))
-    story.append(Paragraph(f"Accuracy: {best_score*100:.2f}%", styles["Normal"]))
-    story.append(Spacer(1,20))
-
-    # =====================================================
-    # CORRELATION HEATMAP
-    # =====================================================
-    plt.figure(figsize=(5,4))
-    sns.heatmap(df.corr(numeric_only=True), cmap="coolwarm")
-    plt.title("Correlation Heatmap")
-    plt.tight_layout()
-    plt.savefig("corr.png")
-    plt.close()
-
-    story.append(Paragraph("Feature Correlation Heatmap", styles["Heading2"]))
-    story.append(RLImage("corr.png", width=400, height=300))
-    story.append(Spacer(1,20))
-
-    # =====================================================
-    # CONFUSION MATRIX + ROC (classification only)
-    # =====================================================
-    if problem == "classification":
-
-        preds = trained[best_model].predict(X_test)
-
-        cm = confusion_matrix(y_test, preds)
-        plt.figure()
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-        plt.title("Confusion Matrix")
-        plt.tight_layout()
-        plt.savefig("cm.png")
-        plt.close()
-
-        story.append(Paragraph("Confusion Matrix", styles["Heading2"]))
-        story.append(RLImage("cm.png", width=300, height=220))
-        story.append(Spacer(1,20))
-
-        try:
-            probs = trained[best_model].predict_proba(X_test)[:,1]
-            fpr,tpr,_ = roc_curve(y_test, probs)
-            plt.figure()
-            plt.plot(fpr,tpr,label="ROC")
-            plt.plot([0,1],[0,1],'--')
-            plt.title("ROC Curve")
-            plt.tight_layout()
-            plt.savefig("roc.png")
-            plt.close()
-
-            story.append(Paragraph("ROC Curve", styles["Heading2"]))
-            story.append(RLImage("roc.png", width=300, height=220))
-            story.append(Spacer(1,20))
-        except:
-            pass
-
-    # =====================================================
-    # FEATURE IMPORTANCE
-    # =====================================================
-    if hasattr(trained[best_model], "feature_importances_"):
-        plt.figure()
-        plt.bar(range(len(trained[best_model].feature_importances_)),
-                trained[best_model].feature_importances_)
-        plt.title("Feature Importance")
-        plt.tight_layout()
-        plt.savefig("feat.png")
-        plt.close()
-
-        story.append(Paragraph("Feature Importance", styles["Heading2"]))
-        story.append(RLImage("feat.png", width=400, height=250))
-        story.append(Spacer(1,20))
-
-    # =====================================================
-    # SHAP
-    # =====================================================
-    try:
-        explainer = shap.Explainer(trained[best_model], X_train[:200])
-        shap_values = explainer(X_test[:100])
-
-        plt.figure()
-        shap.summary_plot(shap_values, X_test[:100], show=False)
-        plt.tight_layout()
-        plt.savefig("shap.png")
-        plt.close()
-
-        story.append(Paragraph("Model Explainability (SHAP)", styles["Heading2"]))
-        story.append(RLImage("shap.png", width=400, height=250))
-        story.append(Spacer(1,20))
-    except:
-        pass
-
-    # =====================================================
-    # GENETIC ALGORITHM
-    # =====================================================
-    story.append(Paragraph("Genetic Feature Optimization", styles["Heading2"]))
-    story.append(Paragraph(f"Selected features: {sum(best_ind)}", styles["Normal"]))
-    story.append(Spacer(1,20))
+    story.append(PageBreak())
 
     # =====================================================
     # EXECUTIVE SUMMARY
     # =====================================================
-    story.append(Paragraph("Executive Summary", styles["Heading2"]))
+    story.append(Paragraph("1. Executive Summary", styles["Heading1"]))
+    story.append(Spacer(1, 0.3*inch))
     story.append(Paragraph(
-        f"The dataset demonstrates predictive performance of {best_score*100:.2f}% "
-        f"using {best_model}. Dataset health score is {quality_score:.2f}%.",
+        f"The dataset demonstrates predictive performance of "
+        f"{best_score*100:.2f}% using {best_model}. "
+        f"Dataset health score: {quality_score:.2f}%.",
+        styles["Normal"]
+    ))
+    story.append(PageBreak())
+
+    # =====================================================
+    # DATASET OVERVIEW
+    # =====================================================
+    story.append(Paragraph("2. Dataset Overview", styles["Heading1"]))
+    story.append(Spacer(1, 0.3*inch))
+
+    story.append(Paragraph(f"Rows: {r}", styles["Normal"]))
+    story.append(Paragraph(f"Columns: {c}", styles["Normal"]))
+    story.append(Paragraph(f"Missing Values: {missing}", styles["Normal"]))
+
+    story.append(PageBreak())
+
+    # =====================================================
+    # MODEL PERFORMANCE
+    # =====================================================
+    story.append(Paragraph("3. Model Performance", styles["Heading1"]))
+    story.append(Spacer(1, 0.3*inch))
+
+    table_data = [["Model", "Score (%)"]]
+    for m, s in scores.items():
+        table_data.append([m, f"{s*100:.2f}"])
+
+    table = Table(table_data)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.black),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+        ("ALIGN",(1,1),(-1,-1),"CENTER")
+    ]))
+
+    story.append(table)
+    story.append(PageBreak())
+
+    # =====================================================
+    # VISUAL ANALYTICS (HEATMAP)
+    # =====================================================
+    story.append(Paragraph("4. Visual Analytics", styles["Heading1"]))
+    story.append(Spacer(1, 0.3*inch))
+
+    plt.figure(figsize=(5,4))
+    sns.heatmap(df.corr(numeric_only=True), cmap="coolwarm")
+    plt.tight_layout()
+    plt.savefig("heatmap.png")
+    plt.close()
+
+    story.append(Image("heatmap.png", width=400, height=300))
+    story.append(PageBreak())
+
+    # =====================================================
+    # SHAP
+    # =====================================================
+    story.append(Paragraph("5. Explainable AI (SHAP)", styles["Heading1"]))
+    story.append(Spacer(1, 0.3*inch))
+
+    try:
+        background = X_train[:100]
+        sample = X_test[:50]
+
+        explainer = shap.Explainer(trained[best_model], background)
+        shap_values = explainer(sample, check_additivity=False)
+
+        plt.figure()
+        shap.summary_plot(shap_values, sample, show=False)
+        plt.tight_layout()
+        plt.savefig("shap.png")
+        plt.close()
+
+        story.append(Image("shap.png", width=400, height=250))
+
+    except:
+        story.append(Paragraph("SHAP explanation unavailable.", styles["Normal"]))
+
+    story.append(PageBreak())
+
+    # =====================================================
+    # GA
+    # =====================================================
+    story.append(Paragraph("6. Optimization Results", styles["Heading1"]))
+    story.append(Spacer(1, 0.3*inch))
+    story.append(Paragraph(f"Selected features: {sum(best_ind)}", styles["Normal"]))
+    story.append(PageBreak())
+
+    # =====================================================
+    # CONCLUSION
+    # =====================================================
+    story.append(Paragraph("7. Conclusion", styles["Heading1"]))
+    story.append(Spacer(1, 0.3*inch))
+    story.append(Paragraph(
+        "The AutoDFit platform provides automated machine learning "
+        "evaluation, model comparison, optimization, and explainable AI insights.",
         styles["Normal"]
     ))
 
-    # =====================================================
-    doc.build(story)
+    # Build with header/footer
+    doc.build(story, onFirstPage=add_header_footer,
+              onLaterPages=add_header_footer)
+
     buffer.seek(0)
-
-    # cleanup temp images
-    for f in ["corr.png","cm.png","roc.png","feat.png","shap.png"]:
-        if os.path.exists(f):
-            os.remove(f)
-
     return buffer
 st.download_button(
     "Download Full Analysis Report",
     generate_pdf(),
     "AutoDFit_Full_Report.pdf"
 )
+
 
 
