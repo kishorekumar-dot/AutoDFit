@@ -235,11 +235,10 @@ if file:
     # PROFESSIONAL PDF REPORT
     # ===============================================================
     def generate_pdf():
-
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer)
-    styles = getSampleStyleSheet()
-    story = []
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer)
+        styles = getSampleStyleSheet()
+        story = []
 
     # ================= COVER =================
     story.append(Spacer(1,200))
@@ -336,4 +335,5 @@ if file:
         file_name="AutoDFit_Report.pdf",
         mime="application/pdf"
     )
+
 
