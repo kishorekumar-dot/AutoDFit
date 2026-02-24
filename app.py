@@ -327,13 +327,15 @@ if file:
     for f in ["heatmap.png","cm.png","feat.png","shap.png"]:
         if os.path.exists(f):
             os.remove(f)
-
-    return buffer
+            
+            return buffer
+            
     st.download_button(
         label="📄 Download Full Report",
         data=generate_pdf(),
         file_name="AutoDFit_Report.pdf",
         mime="application/pdf"
     )
+
 
 
