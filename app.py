@@ -236,44 +236,104 @@ if file:
     # ===============================================================
     def generate_pdf():
 
-        buffer=io.BytesIO()
-        doc=SimpleDocTemplate(buffer)
-        styles=getSampleStyleSheet()
-        story=[]
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer)
+    styles = getSampleStyleSheet()
+    story = []
 
-        # cover
-        story.append(Spacer(1,200))
-        story.append(Paragraph("AutoDFit AI Intelligence Report",styles["Title"]))
+    # ================= COVER =================
+    story.append(Spacer(1,200))
+    story.append(Paragraph("AutoDFit AI Intelligence Report", styles["Title"]))
+    story.append(PageBreak())
+
+    # ================= EXECUTIVE =================
+    story.append(Paragraph("Executive Summary", styles["Heading1"]))
+    story.append(Paragraph(
+        f"Best model {best_model} achieved {best_score*100:.2f}% performance. "
+        f"Dataset health score {quality_score:.2f}%.",
+        styles["Normal"]))
+    story.append(PageBreak())
+
+    # ================= DATASET INFO =================
+    story.append(Paragraph("Dataset Overview", styles["Heading1"]))
+    story.append(Paragraph(f"Rows: {rows}", styles["Normal"]))
+    story.append(Paragraph(f"Columns: {cols}", styles["Normal"]))
+    story.append(Paragraph(f"Missing values: {missing}", styles["Normal"]))
+    story.append(PageBreak())
+
+    # ================= MODEL TABLE =================
+    story.append(Paragraph("Model Comparison", styles["Heading1"]))
+    table_data=[["Model","Score"]]
+    for m,s in scores.items():
+        table_data.append([m,f"{s*100:.2f}"])
+    story.append(Table(table_data))
+    story.append(PageBreak())
+
+    # ================= CORRELATION =================
+    plt.figure(figsize=(5,4))
+    sns.heatmap(df.corr(numeric_only=True), cmap="coolwarm")
+    plt.tight_layout()
+    plt.savefig("heatmap.png")
+    plt.close()
+    story.append(Paragraph("Correlation Heatmap", styles["Heading1"]))
+    story.append(Image("heatmap.png", width=400, height=300))
+    story.append(PageBreak())
+
+    # ================= CONFUSION MATRIX =================
+    if problem=="classification":
+        preds=trained[best_model].predict(X_test)
+        plt.figure()
+        sns.heatmap(confusion_matrix(y_test,preds),annot=True,fmt="d")
+        plt.tight_layout()
+        plt.savefig("cm.png")
+        plt.close()
+        story.append(Paragraph("Confusion Matrix", styles["Heading1"]))
+        story.append(Image("cm.png", width=300, height=220))
         story.append(PageBreak())
 
-        # executive
-        story.append(Paragraph("Executive Summary",styles["Heading1"]))
-        story.append(Paragraph(
-            f"Best model {best_model} achieved {best_score*100:.2f}% performance. "
-            f"Dataset health score {quality_score:.2f}%.",
-            styles["Normal"]))
+    # ================= FEATURE IMPORTANCE =================
+    if hasattr(trained[best_model], "feature_importances_"):
+        plt.figure()
+        plt.bar(range(len(trained[best_model].feature_importances_)),
+                trained[best_model].feature_importances_)
+        plt.tight_layout()
+        plt.savefig("feat.png")
+        plt.close()
+        story.append(Paragraph("Feature Importance", styles["Heading1"]))
+        story.append(Image("feat.png", width=400, height=250))
         story.append(PageBreak())
 
-        # model table
-        story.append(Paragraph("Model Comparison",styles["Heading1"]))
-        table_data=[["Model","Score"]]
-        for m,s in scores.items():
-            table_data.append([m,f"{s*100:.2f}"])
-        table=Table(table_data)
-        table.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,0),colors.black),
-            ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-            ("GRID",(0,0),(-1,-1),1,colors.grey)
-        ]))
-        story.append(table)
+    # ================= SHAP =================
+    try:
+        explainer=shap.Explainer(trained[best_model], X_train[:100])
+        shap_values=explainer(X_test[:50], check_additivity=False)
+        plt.figure()
+        shap.summary_plot(shap_values, X_test[:50], show=False)
+        plt.tight_layout()
+        plt.savefig("shap.png")
+        plt.close()
+        story.append(Paragraph("SHAP Explainability", styles["Heading1"]))
+        story.append(Image("shap.png", width=400, height=250))
+        story.append(PageBreak())
+    except:
+        pass
 
-        doc.build(story,onFirstPage=add_header_footer,onLaterPages=add_header_footer)
-        buffer.seek(0)
-        return buffer
+    doc.build(story,
+              onFirstPage=add_header_footer,
+              onLaterPages=add_header_footer)
 
+    buffer.seek(0)
+
+    # cleanup
+    for f in ["heatmap.png","cm.png","feat.png","shap.png"]:
+        if os.path.exists(f):
+            os.remove(f)
+
+    return buffer
     st.download_button(
         label="📄 Download Full Report",
         data=generate_pdf(),
         file_name="AutoDFit_Report.pdf",
         mime="application/pdf"
     )
+
