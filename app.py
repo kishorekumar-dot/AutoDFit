@@ -1,4 +1,4 @@
-# app.py — AutoDFit (final, production-ready)
+# app.py — AutoDFit (final, production-ready, DEAP removed; pure-Python GA)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,6 +9,7 @@ import io
 import random
 import pickle
 import os
+import copy
 from datetime import datetime
 
 from sklearn.model_selection import train_test_split
@@ -31,8 +32,6 @@ from reportlab.platypus import (
 )
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
-
-from deap import base, creator, tools, algorithms
 
 # ---------------------------
 # Streamlit page config & header
@@ -71,7 +70,7 @@ def load_csv(file) -> pd.DataFrame:
 def quick_data_stats(df: pd.DataFrame):
     rows, cols = df.shape
     missing = int(df.isnull().sum().sum())
-    total = df.size if total := df.size else 1
+    total = df.size if (df.size) else 1
     completeness = (1 - missing/total) * 100
     uniqueness = (df.nunique().sum()/total) * 100
     quality_score = round(completeness*0.7 + uniqueness*0.3, 2)
@@ -289,6 +288,54 @@ if show_shap_checkbox:
     except Exception as e:
         st.warning("SHAP explanation couldn't run reliably for this model/dataset: " + str(e))
 
+# -----------------------------
+# Pure-Python Genetic Algorithm
+# -----------------------------
+def run_simple_ga(eval_fn, n_features, pop_size=10, gens=5, cx_prob=0.6, mut_prob=0.2, tourn_k=3):
+    # init population
+    pop = [[1 if random.random() < 0.5 else 0 for _ in range(n_features)] for _ in range(pop_size)]
+
+    def fitness(ind):
+        return eval_fn(ind)[0]
+
+    def tournament_select(pop, fitnesses):
+        idxs = random.sample(range(len(pop)), k=min(tourn_k, len(pop)))
+        best = max(idxs, key=lambda i: fitnesses[i])
+        return copy.deepcopy(pop[best])
+
+    def two_point_crossover(a, b):
+        if len(a) < 2:
+            return copy.deepcopy(a), copy.deepcopy(b)
+        i, j = sorted(random.sample(range(len(a)), 2))
+        child1 = a[:i] + b[i:j] + a[j:]
+        child2 = b[:i] + a[i:j] + b[j:]
+        return child1, child2
+
+    def mutate(ind, indpb):
+        for i in range(len(ind)):
+            if random.random() < indpb:
+                ind[i] = 1 - ind[i]
+
+    fitnesses = [fitness(ind) for ind in pop]
+    for g in range(gens):
+        newpop = []
+        while len(newpop) < pop_size:
+            parent1 = tournament_select(pop, fitnesses)
+            parent2 = tournament_select(pop, fitnesses)
+            if random.random() < cx_prob:
+                child1, child2 = two_point_crossover(parent1, parent2)
+            else:
+                child1, child2 = copy.deepcopy(parent1), copy.deepcopy(parent2)
+            mutate(child1, mut_prob)
+            mutate(child2, mut_prob)
+            newpop.append(child1)
+            if len(newpop) < pop_size:
+                newpop.append(child2)
+        pop = newpop
+        fitnesses = [fitness(ind) for ind in pop]
+    best_idx = int(np.argmax(fitnesses))
+    return pop[best_idx], fitnesses[best_idx]
+
 # Genetic Algorithm (optional)
 best_individual = None
 if run_ga_checkbox:
@@ -297,37 +344,32 @@ if run_ga_checkbox:
     if n_features <= 1:
         st.info("Not enough features for GA.")
     else:
-        if not hasattr(creator, "FitnessMax"):
-            creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-            creator.create("Individual", list, fitness=creator.FitnessMax)
-        toolbox = base.Toolbox()
-        toolbox.register("attr_bool", random.randint, 0, 1)
-        toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_bool, n=n_features)
-        toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
         def eval_ind(ind):
             sel = [i for i, b in enumerate(ind) if b == 1]
             if len(sel) == 0:
-                return 0.0,
+                return (0.0,)
             try:
                 m = RandomForestClassifier(n_estimators=60) if problem_type == "classification" else RandomForestRegressor(n_estimators=60)
                 m.fit(X_train[:, sel], y_train)
                 pred = m.predict(X_test[:, sel])
                 s = accuracy_score(y_test, pred) if problem_type == "classification" else r2_score(y_test, pred)
-                return float(s),
+                return (float(s),)
             except Exception:
-                return 0.0,
+                return (0.0,)
 
-        toolbox.register("evaluate", eval_ind)
-        toolbox.register("mate", tools.cxTwoPoint)
-        toolbox.register("mutate", tools.mutFlipBit, indpb=0.05)
-        toolbox.register("select", tools.selTournament, tournsize=3)
-
-        pop = toolbox.population(n=ga_pop)
         with st.spinner("Running GA (this may take a moment)..."):
-            algorithms.eaSimple(pop, toolbox, cxpb=0.6, mutpb=0.2, ngen=ga_gen, verbose=False)
-        best_individual = tools.selBest(pop, 1)[0]
-        st.write("GA selected features count:", sum(best_individual))
+            best_individual, best_score_ga = run_simple_ga(
+                eval_fn=eval_ind,
+                n_features=n_features,
+                pop_size=ga_pop,
+                gens=ga_gen,
+                cx_prob=0.6,
+                mut_prob=0.05,
+                tourn_k=3
+            )
+        st.write("GA selected features count:", int(sum(best_individual)))
+        st.write("GA best score:", float(best_score_ga))
 
 # Prediction interface
 st.subheader("Quick prediction (sample)")
