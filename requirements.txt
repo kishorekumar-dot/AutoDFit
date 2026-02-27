@@ -6,4 +6,3 @@ matplotlib>=3.6
 seaborn>=0.12
 shap>=0.42.1
 reportlab>=4.0
-deap>=2.0
