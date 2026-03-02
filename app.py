@@ -1,16 +1,27 @@
-# app.py — AutoDFit (final, production-ready, DEAP removed; pure-Python GA)
+# app.py — AutoDFit v1.0 (Production-ready for Render)
+# Features:
+# - Tabbed UI: Home, Dataset Intelligence, AutoML, Explainability, Optimization, Report
+# - Safe preprocessing (OrdinalEncoder), model training (5 algos), leaderboard
+# - Pure-Python GA optimization (optional)
+# - SHAP on-demand (button, sampled)
+# - Multi-page PDF report generation (ReportLab) with temp images
+# - Download trained model
+# - Defensive error handling + caching
+
+import os
+import io
+import tempfile
+import pickle
+import random
+import copy
+from datetime import datetime
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import shap
-import io
-import random
-import pickle
-import os
-import copy
-from datetime import datetime
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OrdinalEncoder, StandardScaler
@@ -33,51 +44,53 @@ from reportlab.platypus import (
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
-# ---------------------------
-# Streamlit page config & header
-# ---------------------------
-st.set_page_config(page_title="AutoDFit", layout="wide", initial_sidebar_state="expanded")
+# -------------------------
+# Page config and styling
+# -------------------------
+st.set_page_config(page_title="AutoDFit", layout="wide")
 st.markdown(
     """
-    <div style="text-align:center; margin-top:12px;">
-      <svg width="240" height="80" viewBox="0 0 260 90" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="g1" x1="0" x2="1">
-            <stop stop-color="#00F5FF" offset="0%"/>
-            <stop stop-color="#7B61FF" offset="100%"/>
-          </linearGradient>
-        </defs>
+    <style>
+      .stApp { background-color: #f7f8fb; }
+      .title { font-weight:700; }
+    </style>
+    """, unsafe_allow_html=True
+)
+
+# Simple SVG logo (inline)
+st.markdown(
+    """
+    <div style="text-align:center; margin-bottom:8px;">
+      <svg width="260" height="80" viewBox="0 0 260 90" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="g1" x1="0" x2="1"><stop stop-color="#00F5FF" offset="0%"/><stop stop-color="#7B61FF" offset="100%"/></linearGradient></defs>
         <circle cx="52" cy="45" r="20" fill="url(#g1)">
           <animate attributeName="r" values="16;24;16" dur="2s" repeatCount="indefinite"/>
         </circle>
         <text x="95" y="54" font-family="Arial" font-size="30" font-weight="700" fill="#111827">AutoDFit</text>
       </svg>
     </div>
-    """,
-    unsafe_allow_html=True
+    """, unsafe_allow_html=True
 )
 st.title("AutoDFit — AI Dataset Intelligence Platform")
-st.caption("Automated dataset fitness, model comparison, explainability and professional reporting")
+st.caption("Automated dataset fitness, model selection, explainability & evolutionary feature optimization")
 
-# ---------------------------
-# Caching helpers
-# ---------------------------
+# -------------------------
+# Configurable defaults (via environment for Render)
+# -------------------------
+GA_DEFAULT_POP = int(os.getenv("GA_DEFAULT_POP", 10))
+GA_DEFAULT_GEN = int(os.getenv("GA_DEFAULT_GEN", 3))
+SHAP_SAMPLE = int(os.getenv("SHAP_SAMPLE", 100))
+
+# -------------------------
+# Caches and helpers
+# -------------------------
 @st.cache_data
 def load_csv(file) -> pd.DataFrame:
     return pd.read_csv(file)
 
-@st.cache_data
-def quick_data_stats(df: pd.DataFrame):
-    rows, cols = df.shape
-    missing = int(df.isnull().sum().sum())
-    total = df.size if (df.size) else 1
-    completeness = (1 - missing/total) * 100
-    uniqueness = (df.nunique().sum()/total) * 100
-    quality_score = round(completeness*0.7 + uniqueness*0.3, 2)
-    return rows, cols, missing, quality_score
-
 @st.cache_resource
 def train_models_cached(X_train, X_test, y_train, y_test, problem):
+    # Models chosen to be representative and light enough
     if problem == "classification":
         models = {
             "Logistic": LogisticRegression(max_iter=300),
@@ -97,212 +110,35 @@ def train_models_cached(X_train, X_test, y_train, y_test, problem):
 
     scores = {}
     trained = {}
-    for name, m in models.items():
+    for name, model in models.items():
         try:
-            m.fit(X_train, y_train)
-            pred = m.predict(X_test)
+            model.fit(X_train, y_train)
+            pred = model.predict(X_test)
             score = accuracy_score(y_test, pred) if problem == "classification" else r2_score(y_test, pred)
             scores[name] = float(score) if score is not None else float("nan")
-            trained[name] = m
+            trained[name] = model
         except Exception:
             scores[name] = float("nan")
-            trained[name] = m
+            trained[name] = model
     return scores, trained
 
-# ---------------------------
-# Sidebar options
-# ---------------------------
-with st.sidebar:
-    st.header("Options")
-    show_shap_checkbox = st.checkbox("Enable SHAP explainability (sampled)", value=True)
-    run_ga_checkbox = st.checkbox("Run Genetic Feature Optimization (slow)", value=False)
-    ga_pop = st.slider("GA population (if enabled)", min_value=6, max_value=30, value=10, step=2)
-    ga_gen = st.slider("GA generations (if enabled)", min_value=3, max_value=8, value=5, step=1)
-    st.write("Tip: use small datasets for faster runs (<= 10000 rows)")
-
-# ---------------------------
-# File upload
-# ---------------------------
-uploaded = st.file_uploader("Upload dataset (CSV)", type=["csv"])
-if not uploaded:
-    st.info("Upload a CSV to start. Example: Iris, Titanic, etc.")
-    st.stop()
-
-df = load_csv(uploaded)
-
-# quick stats
-rows, cols, missing, quality_score = quick_data_stats(df)
-st.header("Dataset Overview")
-c1, c2, c3 = st.columns(3)
-c1.metric("Rows", rows)
-c2.metric("Cols", cols)
-c3.metric("Missing cells", missing)
-st.write(f"Dataset health score: **{quality_score}%**")
-st.dataframe(df.head())
-
-# correlation (safe)
-st.subheader("Correlation heatmap")
-fig_corr = plt.figure(figsize=(6,4))
-try:
-    sns.heatmap(df.corr(numeric_only=True), cmap="coolwarm", annot=False)
-    st.pyplot(fig_corr)
-except Exception:
-    st.warning("Correlation heatmap could not be computed for this dataset.")
-plt.close(fig_corr)
-
-# target selection
-target_col = st.selectbox("Select target column", df.columns)
-X_df = df.drop(columns=[target_col])
-y_ser = df[target_col]
-
-# detect problem type
-problem_type = "classification" if (y_ser.dtype == "object" or y_ser.nunique() < 20) else "regression"
-st.write(f"Detected problem type: **{problem_type}**")
-
-# create preprocessing pipeline dynamically
-num_cols = X_df.select_dtypes(include=np.number).columns.tolist()
-cat_cols = X_df.select_dtypes(exclude=np.number).columns.tolist()
-
-transformers = []
-if len(num_cols) > 0:
-    num_pipeline = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler())
-    ])
-    transformers.append(("num", num_pipeline, num_cols))
-
-if len(cat_cols) > 0:
-    cat_pipeline = Pipeline([
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        ("enc", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1))
-    ])
-    transformers.append(("cat", cat_pipeline, cat_cols))
-
-if len(transformers) == 0:
-    st.error("No valid features found in dataset after dropping target. Cannot proceed.")
-    st.stop()
-
-preprocessor = ColumnTransformer(transformers, remainder="drop")
-
-# split + preprocess
-with st.spinner("Preparing data (split + preprocess)..."):
-    X_train_df, X_test_df, y_train, y_test = train_test_split(X_df, y_ser, test_size=0.2, random_state=42)
+def safe_corr(df):
     try:
-        X_train = preprocessor.fit_transform(X_train_df)
-        X_test = preprocessor.transform(X_test_df)
-    except Exception as e:
-        st.error("Preprocessing failed: " + str(e))
-        st.stop()
-
-# Train models
-with st.spinner("Training models (this may take a moment)..."):
-    scores, trained_models = train_models_cached(X_train, X_test, y_train, y_test, problem_type)
-
-# Leaderboard and best model
-leader_df = pd.DataFrame(list(scores.items()), columns=["Model", "Score"])
-# handle NaNs and sort (descending)
-leader_df["Score_filled"] = leader_df["Score"].fillna(-9999)
-leader_df = leader_df.sort_values("Score_filled", ascending=False).drop(columns=["Score_filled"])
-st.subheader("Model leaderboard")
-st.dataframe(leader_df.style.format({"Score": "{:.4f}"}))
-
-if leader_df.shape[0] == 0 or leader_df["Score"].isnull().all():
-    st.error("No trained models produced valid scores.")
-    st.stop()
-
-best_model_name = leader_df.iloc[0]["Model"]
-best_score = leader_df.iloc[0]["Score"]
-best_model_obj = trained_models.get(best_model_name)
-
-# show best model metric in metric control
-try:
-    display_val = f"{float(best_score*100):.2f}%" if best_score is not None and not np.isnan(best_score) else "N/A"
-    st.metric("Best model", best_model_name, display_val)
-except Exception:
-    st.metric("Best model", best_model_name)
-
-# Model comparison chart
-st.subheader("Model comparison chart")
-fig_bar = plt.figure(figsize=(7,3))
-scores_numeric = [s if (s is not None and not (isinstance(s, float) and np.isnan(s))) else 0.0 for s in leader_df["Score"].tolist()]
-plt.bar(leader_df["Model"], np.array(scores_numeric) * 100)
-plt.ylabel("Score (%)")
-plt.xticks(rotation=25)
-st.pyplot(fig_bar)
-plt.close(fig_bar)
-
-# If classification: confusion and ROC
-if problem_type == "classification":
-    st.subheader("Evaluation: Confusion matrix & ROC (best model)")
-    try:
-        preds = best_model_obj.predict(X_test)
-        cm = confusion_matrix(y_test, preds)
-        fig_cm = plt.figure(figsize=(4,3))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-        st.pyplot(fig_cm)
-        plt.close(fig_cm)
+        return df.corr(numeric_only=True)
     except Exception:
-        st.warning("Could not compute confusion matrix.")
+        return None
 
-    if hasattr(best_model_obj, "predict_proba"):
-        try:
-            probs = best_model_obj.predict_proba(X_test)[:, 1]
-            fpr, tpr, _ = roc_curve(y_test, probs)
-            roc_auc = auc(fpr, tpr)
-            fig_roc = plt.figure(figsize=(4,3))
-            plt.plot(fpr, tpr, label=f"AUC={roc_auc:.2f}")
-            plt.plot([0, 1], [0, 1], "--")
-            plt.legend()
-            st.pyplot(fig_roc)
-            plt.close(fig_roc)
-        except Exception:
-            st.info("ROC could not be computed for this model/dataset.")
-
-# Feature importance
-st.subheader("Feature importance (if supported by model)")
-if hasattr(best_model_obj, "feature_importances_"):
-    try:
-        feats = best_model_obj.feature_importances_
-        fig_feat = plt.figure(figsize=(6,3))
-        plt.bar(range(len(feats)), feats)
-        plt.xlabel("Feature index (post-preprocessing)")
-        st.pyplot(fig_feat)
-        plt.close(fig_feat)
-    except Exception:
-        st.info("Could not display feature importance.")
-else:
-    st.info("Selected model doesn't expose `feature_importances_` (try RandomForest).")
-
-# SHAP explainability
-if show_shap_checkbox:
-    st.subheader("SHAP explainability (sampled)")
-    try:
-        background = X_train[:200] if X_train.shape[0] > 200 else X_train
-        sample = X_test[:100] if X_test.shape[0] > 100 else X_test
-        explainer = shap.Explainer(best_model_obj, background)
-        shap_values = explainer(sample, check_additivity=False)
-        fig_shap = plt.figure(figsize=(6,4))
-        shap.summary_plot(shap_values, sample, show=False)
-        st.pyplot(fig_shap)
-        plt.close(fig_shap)
-    except Exception as e:
-        st.warning("SHAP explanation couldn't run reliably for this model/dataset: " + str(e))
-
-# -----------------------------
-# Pure-Python Genetic Algorithm
-# -----------------------------
-def run_simple_ga(eval_fn, n_features, pop_size=10, gens=5, cx_prob=0.6, mut_prob=0.2, tourn_k=3):
-    # init population
+# Pure-Python GA (lightweight)
+def run_simple_ga(eval_fn, n_features, pop_size=10, gens=3, cx_prob=0.6, mut_prob=0.05, tourn_k=3):
+    if n_features <= 1:
+        return None, 0.0
     pop = [[1 if random.random() < 0.5 else 0 for _ in range(n_features)] for _ in range(pop_size)]
-
     def fitness(ind):
         return eval_fn(ind)[0]
-
     def tournament_select(pop, fitnesses):
         idxs = random.sample(range(len(pop)), k=min(tourn_k, len(pop)))
         best = max(idxs, key=lambda i: fitnesses[i])
         return copy.deepcopy(pop[best])
-
     def two_point_crossover(a, b):
         if len(a) < 2:
             return copy.deepcopy(a), copy.deepcopy(b)
@@ -310,14 +146,12 @@ def run_simple_ga(eval_fn, n_features, pop_size=10, gens=5, cx_prob=0.6, mut_pro
         child1 = a[:i] + b[i:j] + a[j:]
         child2 = b[:i] + a[i:j] + b[j:]
         return child1, child2
-
     def mutate(ind, indpb):
         for i in range(len(ind)):
             if random.random() < indpb:
                 ind[i] = 1 - ind[i]
-
     fitnesses = [fitness(ind) for ind in pop]
-    for g in range(gens):
+    for _ in range(gens):
         newpop = []
         while len(newpop) < pop_size:
             parent1 = tournament_select(pop, fitnesses)
@@ -334,195 +168,500 @@ def run_simple_ga(eval_fn, n_features, pop_size=10, gens=5, cx_prob=0.6, mut_pro
         pop = newpop
         fitnesses = [fitness(ind) for ind in pop]
     best_idx = int(np.argmax(fitnesses))
-    return pop[best_idx], fitnesses[best_idx]
+    return pop[best_idx], float(fitnesses[best_idx])
 
-# Genetic Algorithm (optional)
-best_individual = None
-if run_ga_checkbox:
-    st.subheader("Genetic Feature Optimization (sampled / optional)")
-    n_features = X_train.shape[1]
-    if n_features <= 1:
-        st.info("Not enough features for GA.")
-    else:
+# -------------------------
+# UI: Tabs skeleton
+# -------------------------
+tabs = st.tabs(["Home", "Dataset Intelligence", "AutoML Engine", "Explainable AI", "Optimization Lab", "AI Report"])
+home_tab, data_tab, automl_tab, explain_tab, opt_tab, report_tab = tabs
 
-        def eval_ind(ind):
-            sel = [i for i, b in enumerate(ind) if b == 1]
-            if len(sel) == 0:
-                return (0.0,)
-            try:
-                m = RandomForestClassifier(n_estimators=60) if problem_type == "classification" else RandomForestRegressor(n_estimators=60)
-                m.fit(X_train[:, sel], y_train)
-                pred = m.predict(X_test[:, sel])
-                s = accuracy_score(y_test, pred) if problem_type == "classification" else r2_score(y_test, pred)
-                return (float(s),)
-            except Exception:
-                return (0.0,)
+# Global state container (Streamlit session_state)
+if "df" not in st.session_state:
+    st.session_state.df = None
+if "preprocessor" not in st.session_state:
+    st.session_state.preprocessor = None
+if "trained_models" not in st.session_state:
+    st.session_state.trained_models = None
+if "scores" not in st.session_state:
+    st.session_state.scores = None
+if "best_model_name" not in st.session_state:
+    st.session_state.best_model_name = None
+if "best_individual" not in st.session_state:
+    st.session_state.best_individual = None
 
-        with st.spinner("Running GA (this may take a moment)..."):
-            best_individual, best_score_ga = run_simple_ga(
-                eval_fn=eval_ind,
-                n_features=n_features,
-                pop_size=ga_pop,
-                gens=ga_gen,
-                cx_prob=0.6,
-                mut_prob=0.05,
-                tourn_k=3
-            )
-        st.write("GA selected features count:", int(sum(best_individual)))
-        st.write("GA best score:", float(best_score_ga))
+# -------------------------
+# HOME TAB
+# -------------------------
+with home_tab:
+    st.header("Welcome")
+    st.markdown("""
+    **AutoDFit** automates dataset fitness evaluation, model selection, explainability, and feature optimization.
+    Upload a CSV on the right (or below on mobile), then go to **Dataset Intelligence** to start.
+    """)
+    st.info("Pro tip: Use small demo CSVs for live demos (Iris, Titanic). SHAP & GA are heavy — run only when needed.")
+    st.markdown("**Quick capabilities:** Dataset profiling • AutoML (5 models) • SHAP explainability (on-demand) • Genetic feature optimization (optional) • PDF report")
 
-# Prediction interface
-st.subheader("Quick prediction (sample)")
-if st.button("Predict on first test row"):
-    try:
-        sample_pred = best_model_obj.predict(X_test[:1])
-        st.write("Prediction:", sample_pred[0])
-    except Exception as e:
-        st.warning("Prediction failed: " + str(e))
-
-# Download trained model
-try:
-    st.download_button("Download trained model (.pkl)",
-                       data=pickle.dumps(best_model_obj),
-                       file_name="autodfit_model.pkl",
-                       mime="application/octet-stream")
-except Exception:
-    st.info("Model download unavailable for this object.")
-
-# -----------------------------
-# PDF report generation
-# -----------------------------
-def pdf_header_footer(canvas, doc):
-    canvas.saveState()
-    canvas.setFont("Helvetica-Bold", 10)
-    canvas.drawString(40, 800, "AutoDFit AI Analytics Platform")
-    canvas.setFont("Helvetica", 9)
-    canvas.drawRightString(550, 20, f"Page {canvas.getPageNumber()}")
-    canvas.restoreState()
-
-def generate_pdf_report():
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, rightMargin=40, leftMargin=40, topMargin=60, bottomMargin=40)
-    styles = getSampleStyleSheet()
-    story = []
-
-    # Cover
-    story.append(Spacer(1, 140))
-    story.append(Paragraph("AutoDFit AI Intelligence Report", styles["Title"]))
-    story.append(Spacer(1, 12))
-    story.append(Paragraph(f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", styles["Normal"]))
-    story.append(PageBreak())
-
-    # TOC
-    story.append(Paragraph("Table of Contents", styles["Heading1"]))
-    for item in ["1. Executive Summary", "2. Dataset Overview", "3. Model Performance",
-                 "4. Visual Analytics", "5. Explainability", "6. Genetic Optimization", "7. Conclusion"]:
-        story.append(Paragraph(item, styles["Normal"]))
-    story.append(PageBreak())
-
-    # Executive
-    story.append(Paragraph("1. Executive Summary", styles["Heading1"]))
-    story.append(Paragraph(f"Best model: {best_model_name}", styles["Normal"]))
-    story.append(Paragraph(f"Best score: {best_score if best_score is not None else 'N/A'}", styles["Normal"]))
-    story.append(PageBreak())
-
-    # Dataset
-    story.append(Paragraph("2. Dataset Overview", styles["Heading1"]))
-    story.append(Paragraph(f"Rows: {rows}", styles["Normal"]))
-    story.append(Paragraph(f"Columns: {cols}", styles["Normal"]))
-    story.append(Paragraph(f"Missing cells: {missing}", styles["Normal"]))
-    story.append(PageBreak())
-
-    # Model performance table
-    story.append(Paragraph("3. Model Performance", styles["Heading1"]))
-    table_data = [["Model", "Score (%)"]]
-    for m, s in scores.items():
+# -------------------------
+# DATASET INTELLIGENCE TAB
+# -------------------------
+with data_tab:
+    st.header("Dataset Intelligence")
+    uploaded = st.file_uploader("Upload CSV dataset (required for analysis)", type=["csv"], key="uploader")
+    if uploaded is not None:
         try:
-            table_data.append([m, f"{float(s)*100:.2f}"])
-        except Exception:
-            table_data.append([m, "N/A"])
-    tbl = Table(table_data)
-    tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.black),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
-        ("ALIGN", (1,1), (-1,-1), "CENTER")
-    ]))
-    story.append(tbl)
-    story.append(PageBreak())
-
-    # Visual analytics (heatmap)
-    story.append(Paragraph("4. Visual Analytics", styles["Heading1"]))
-    try:
-        plt.figure(figsize=(6,4))
-        sns.heatmap(df.corr(numeric_only=True), cmap="coolwarm")
-        plt.tight_layout()
-        plt.savefig("tmp_heatmap.png")
-        plt.close()
-        story.append(RLImage("tmp_heatmap.png", width=400, height=300))
-        story.append(PageBreak())
-    except Exception:
-        story.append(Paragraph("Correlation heatmap unavailable.", styles["Normal"]))
-        story.append(PageBreak())
-
-    # Explainability (feature importance + SHAP)
-    story.append(Paragraph("5. Explainability (SHAP & Feature importance)", styles["Heading1"]))
-    try:
-        if hasattr(best_model_obj, "feature_importances_"):
-            plt.figure()
-            plt.bar(range(len(best_model_obj.feature_importances_)), best_model_obj.feature_importances_)
-            plt.tight_layout()
-            plt.savefig("tmp_feat.png")
-            plt.close()
-            story.append(RLImage("tmp_feat.png", width=400, height=250))
-    except Exception:
-        story.append(Paragraph("Feature importance not available.", styles["Normal"]))
-
-    try:
-        background = X_train[:200] if X_train.shape[0] > 200 else X_train
-        sample = X_test[:100] if X_test.shape[0] > 100 else X_test
-        explainer = shap.Explainer(best_model_obj, background)
-        shap_vals = explainer(sample, check_additivity=False)
-        plt.figure(figsize=(6,4))
-        shap.summary_plot(shap_vals, sample, show=False)
-        plt.tight_layout()
-        plt.savefig("tmp_shap.png")
-        plt.close()
-        story.append(RLImage("tmp_shap.png", width=400, height=250))
-    except Exception:
-        story.append(Paragraph("SHAP plot unavailable.", styles["Normal"]))
-
-    story.append(PageBreak())
-
-    # GA
-    story.append(Paragraph("6. Genetic Optimization", styles["Heading1"]))
-    if best_individual is not None:
-        story.append(Paragraph(f"Selected features count: {sum(best_individual)}", styles["Normal"]))
+            df = load_csv(uploaded)
+            st.session_state.df = df
+        except Exception as e:
+            st.error("Failed to read CSV: " + str(e))
+            st.stop()
     else:
-        story.append(Paragraph("GA not executed or returned no result.", styles["Normal"]))
-    story.append(PageBreak())
+        if st.session_state.df is None:
+            st.info("Please upload a CSV to proceed. Use a small test CSV for first run.")
+            st.stop()
+        df = st.session_state.df
 
-    story.append(Paragraph("7. Conclusion", styles["Heading1"]))
-    story.append(Paragraph("AutoDFit provides automated dataset evaluation, model comparison, optimization and explainability.", styles["Normal"]))
+    # Overview widgets
+    rows, cols = df.shape
+    missing = int(df.isnull().sum().sum())
+    total = df.size if df.size else 1
+    completeness = round((1 - missing / total) * 100, 2)
+    uniqueness = round((df.nunique().sum() / total) * 100, 2)
+    quality_score = round(completeness * 0.7 + uniqueness * 0.3, 2)
 
-    # build
-    doc.build(story, onFirstPage=pdf_header_footer, onLaterPages=pdf_header_footer)
+    c1, c2, c3, c4 = st.columns([1,1,1,1])
+    c1.metric("Rows", rows)
+    c2.metric("Columns", cols)
+    c3.metric("Missing cells", missing)
+    c4.metric("Dataset health", f"{quality_score}%")
 
-    # cleanup
-    for tmp in ["tmp_heatmap.png", "tmp_feat.png", "tmp_shap.png"]:
-        if os.path.exists(tmp):
-            os.remove(tmp)
+    st.subheader("Data preview")
+    st.dataframe(df.head())
 
-    buffer.seek(0)
-    return buffer
+    st.subheader("Feature summary")
+    num_cols = df.select_dtypes(include=np.number).columns.tolist()
+    cat_cols = df.select_dtypes(exclude=np.number).columns.tolist()
+    st.write(f"Numeric features: **{len(num_cols)}** • Categorical features: **{len(cat_cols)}**")
 
-# Download PDF
-try:
-    st.download_button(
-        label="📄 Download Full Analysis Report (PDF)",
-        data=generate_pdf_report(),
-        file_name="AutoDFit_Report.pdf",
-        mime="application/pdf"
-    )
-except Exception as e:
-    st.warning("Could not generate PDF: " + str(e))
+    corr = safe_corr(df)
+    st.subheader("Correlation heatmap (numeric features)")
+    if corr is not None and not corr.empty:
+        fig = plt.figure(figsize=(6,4))
+        sns.heatmap(corr, cmap="coolwarm")
+        st.pyplot(fig)
+        plt.close(fig)
+    else:
+        st.info("Correlation heatmap not available (insufficient numeric data).")
+
+    # Target selection
+    st.subheader("Select target column")
+    target = st.selectbox("Choose target (label) column", df.columns, key="target_select")
+    st.session_state["target_col"] = target
+
+# -------------------------
+# AUTOML ENGINE TAB
+# -------------------------
+with automl_tab:
+    st.header("AutoML Engine")
+    if st.session_state.df is None:
+        st.info("Upload dataset first in Dataset Intelligence.")
+        st.stop()
+    df = st.session_state.df.copy()
+    target = st.session_state.get("target_col", None)
+    if target is None:
+        st.error("Target column not selected. Go to Dataset Intelligence tab.")
+        st.stop()
+
+    X_df = df.drop(columns=[target])
+    y_ser = df[target]
+
+    problem = "classification" if (y_ser.dtype == "object" or y_ser.nunique() < 20) else "regression"
+    st.success(f"Detected problem type: {problem}")
+
+    # Build preprocessor (safe)
+    num_cols = X_df.select_dtypes(include=np.number).columns.tolist()
+    cat_cols = X_df.select_dtypes(exclude=np.number).columns.tolist()
+
+    transformers = []
+    if num_cols:
+        transformers.append(("num", Pipeline([("imp", SimpleImputer(strategy="median")), ("sc", StandardScaler())]), num_cols))
+    if cat_cols:
+        transformers.append(("cat", Pipeline([("imp", SimpleImputer(strategy="most_frequent")), ("enc", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1))]), cat_cols))
+
+    if not transformers:
+        st.error("No features available for modeling after dropping target.")
+        st.stop()
+
+    pre = ColumnTransformer(transformers, remainder="drop")
+    with st.spinner("Splitting and preprocessing..."):
+        X_train_df, X_test_df, y_train, y_test = train_test_split(X_df, y_ser, test_size=0.2, random_state=42)
+        try:
+            X_train = pre.fit_transform(X_train_df)
+            X_test = pre.transform(X_test_df)
+        except Exception as e:
+            st.error("Preprocessing failed: " + str(e))
+            st.stop()
+    st.session_state.preprocessor = pre
+
+    # Model training (cached)
+    run_train = st.button("Train models (5 algorithms)", key="train_models")
+    if run_train:
+        with st.spinner("Training models..."):
+            scores, trained = train_models_cached(X_train, X_test, y_train, y_test, problem)
+            st.session_state.trained_models = trained
+            st.session_state.scores = scores
+            # leaderboard
+            df_scores = pd.DataFrame(list(scores.items()), columns=["Model", "Score"])
+            df_scores = df_scores.sort_values("Score", ascending=False).reset_index(drop=True)
+            st.subheader("Model Leaderboard")
+            st.dataframe(df_scores.style.format({"Score":"{:.4f}"}))
+            if df_scores.shape[0] > 0:
+                best_name = df_scores.iloc[0]["Model"]
+                st.session_state.best_model_name = best_name
+                st.success(f"Best model: {best_name} ({df_scores.iloc[0]['Score']:.4f})")
+    else:
+        # show cached results if present
+        if st.session_state.scores is not None:
+            df_scores = pd.DataFrame(list(st.session_state.scores.items()), columns=["Model", "Score"]).sort_values("Score", ascending=False)
+            st.subheader("Cached Leaderboard")
+            st.dataframe(df_scores.style.format({"Score":"{:.4f}"}))
+            if st.session_state.best_model_name:
+                st.info(f"Best cached model: {st.session_state.best_model_name}")
+
+    # If trained, show evaluation charts (on-demand)
+    if st.session_state.trained_models is not None and st.session_state.scores is not None:
+        df_scores = pd.DataFrame(list(st.session_state.scores.items()), columns=["Model", "Score"]).sort_values("Score", ascending=False)
+        st.subheader("Model comparison chart")
+        fig = plt.figure(figsize=(7,3))
+        scores_numeric = [s if (not (isinstance(s, float) and np.isnan(s))) else 0.0 for s in df_scores["Score"].tolist()]
+        plt.bar(df_scores["Model"], np.array(scores_numeric) * 100)
+        plt.ylabel("Score (%)")
+        plt.xticks(rotation=25)
+        st.pyplot(fig)
+        plt.close(fig)
+
+        best_name = df_scores.iloc[0]["Model"]
+        best_obj = st.session_state.trained_models.get(best_name)
+        st.metric("Selected best model", best_name, f"{df_scores.iloc[0]['Score']*100:.2f}%")
+        # Evaluation charts for classification
+        if problem == "classification":
+            try:
+                preds = best_obj.predict(X_test)
+                cm = confusion_matrix(y_test, preds)
+                fig_cm = plt.figure(figsize=(4,3))
+                sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+                st.pyplot(fig_cm)
+                plt.close(fig_cm)
+                if hasattr(best_obj, "predict_proba"):
+                    try:
+                        probs = best_obj.predict_proba(X_test)[:, 1]
+                        fpr, tpr, _ = roc_curve(y_test, probs)
+                        roc_auc = auc(fpr, tpr)
+                        fig_roc = plt.figure(figsize=(4,3))
+                        plt.plot(fpr, tpr, label=f"AUC={roc_auc:.2f}")
+                        plt.plot([0,1],[0,1],"--")
+                        plt.legend()
+                        st.pyplot(fig_roc)
+                        plt.close(fig_roc)
+                    except Exception:
+                        st.info("ROC unavailable for this model/dataset.")
+            except Exception:
+                st.info("Evaluation charts could not be generated for selected model.")
+
+        # Model export
+        if st.button("Download best model (.pkl)"):
+            try:
+                buf = io.BytesIO()
+                pickle.dump(best_obj, buf)
+                buf.seek(0)
+                st.download_button("Click to download model", data=buf.read(), file_name="autodfit_model.pkl", mime="application/octet-stream")
+            except Exception as e:
+                st.warning("Model download failed: " + str(e))
+
+# -------------------------
+# EXPLAINABLE AI TAB
+# -------------------------
+with explain_tab:
+    st.header("Explainable AI")
+    if st.session_state.trained_models is None:
+        st.info("Train models first in AutoML Engine.")
+        st.stop()
+    best_name = st.session_state.best_model_name
+    best_model = st.session_state.trained_models.get(best_name)
+    st.write(f"Current best model: **{best_name}**")
+
+    # Feature importance
+    st.subheader("Feature importance")
+    try:
+        if hasattr(best_model, "feature_importances_"):
+            feats = best_model.feature_importances_
+            fig = plt.figure(figsize=(6,3))
+            plt.bar(range(len(feats)), feats)
+            plt.xlabel("Feature index (post-processing)")
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.info("Model does not provide feature_importances_.")
+    except Exception:
+        st.info("Could not compute feature importance for this model.")
+
+    # SHAP - on demand
+    st.subheader("SHAP (on-demand, sampled)")
+    if st.button("Run SHAP (sampled)", key="shap_button"):
+        with st.spinner("Computing SHAP values (sampled)..."):
+            try:
+                # safe small background and sample
+                background = None
+                sample = None
+                # try to reconstruct X_train, X_test via preprocessor + stored splits
+                # Note: preprocessor in session_state contains transformers but not X_train/X_test; we rely on training-time local variables
+                # We'll attempt to reconstruct from the last training step's preprocessed arrays if present in cache (train_models_cached used them)
+                # Fallback: use preprocessor to transform a slice of the original df
+                df = st.session_state.df
+                target = st.session_state.get("target_col")
+                X_df = df.drop(columns=[target])
+                X_train_df = X_df.sample(min(200, len(X_df)), random_state=42)
+                background = st.session_state.get("background_cached")
+                # If not cached, compute small background
+                if background is None:
+                    try:
+                        pre = st.session_state.preprocessor
+                        background = pre.transform(X_train_df)
+                        st.session_state.background_cached = background
+                    except Exception:
+                        background = None
+                # sample for explanation
+                X_sample_df = X_df.sample(min(SHAP_SAMPLE, max(10, int(len(X_df)/10)))) if len(X_df) > 0 else X_df
+                try:
+                    sample = st.session_state.preprocessor.transform(X_sample_df)
+                except Exception:
+                    sample = None
+
+                if background is None or sample is None:
+                    st.warning("SHAP: insufficient preprocessed data (try re-training with more rows or run train models).")
+                else:
+                    explainer = shap.Explainer(best_model, background)
+                    shap_vals = explainer(sample, check_additivity=False)
+                    fig_shap = plt.figure(figsize=(7,4))
+                    shap.summary_plot(shap_vals, sample, show=False)
+                    st.pyplot(fig_shap)
+                    plt.close(fig_shap)
+            except Exception as e:
+                st.error("SHAP failed: " + str(e))
+
+# -------------------------
+# OPTIMIZATION LAB TAB (GA)
+# -------------------------
+with opt_tab:
+    st.header("Optimization Lab — Genetic Feature Selection")
+    if st.session_state.trained_models is None:
+        st.info("Train models first in AutoML Engine to use GA results baseline.")
+        st.stop()
+    if st.session_state.preprocessor is None:
+        st.info("Preprocessor not available. Train models first.")
+        st.stop()
+
+    # get preprocessed feature count
+    # use X_train shape by transforming small slice
+    df = st.session_state.df
+    target = st.session_state.get("target_col")
+    X_df = df.drop(columns=[target])
+    # transform a small slice to get feature count
+    try:
+        tmp = st.session_state.preprocessor.transform(X_df.head(5))
+        n_features = tmp.shape[1]
+    except Exception:
+        st.error("Could not compute feature count for GA.")
+        n_features = 0
+
+    st.write(f"Features (post-preprocessing): {n_features}")
+    ga_run = st.button("Run GA optimization (small run)", key="ga_button")
+    pop_size = st.number_input("Population size", min_value=6, max_value=30, value=GA_DEFAULT_POP, step=2)
+    gens = st.number_input("Generations", min_value=1, max_value=8, value=GA_DEFAULT_GEN, step=1)
+
+    if ga_run:
+        with st.spinner("Running GA (this may take a moment)..."):
+            def eval_fn(ind):
+                sel = [i for i, b in enumerate(ind) if b == 1]
+                if len(sel) == 0:
+                    return (0.0,)
+                try:
+                    # reconstruct a small training set to evaluate feature subset quickly
+                    X_df_local = X_df.copy()
+                    y_local = df[target].copy()
+                    X_train_df_local, X_test_df_local, y_train_local, y_test_local = train_test_split(X_df_local, y_local, test_size=0.2, random_state=42)
+                    pre_local = st.session_state.preprocessor
+                    X_train_local = pre_local.transform(X_train_df_local)
+                    X_test_local = pre_local.transform(X_test_df_local)
+                    model_local = RandomForestClassifier(n_estimators=60) if (y_local.dtype == "object" or y_local.nunique() < 20) else RandomForestRegressor(n_estimators=60)
+                    model_local.fit(X_train_local[:, sel], y_train_local)
+                    pred = model_local.predict(X_test_local[:, sel])
+                    sc = accuracy_score(y_test_local, pred) if (y_local.dtype == "object" or y_local.nunique() < 20) else r2_score(y_test_local, pred)
+                    return (float(sc),)
+                except Exception:
+                    return (0.0,)
+            best_ind, best_score = run_simple_ga(eval_fn, n_features, pop_size=int(pop_size), gens=int(gens))
+            if best_ind is None:
+                st.info("Not enough features for GA.")
+            else:
+                st.session_state.best_individual = best_ind
+                st.success(f"GA finished. Best score (sampled): {best_score:.4f}")
+                st.write("Selected features count:", int(sum(best_ind)))
+
+# -------------------------
+# AI REPORT TAB (PDF generation)
+# -------------------------
+with report_tab:
+    st.header("AI Report (Download)")
+    if st.session_state.df is None or st.session_state.trained_models is None:
+        st.info("Complete Dataset Intelligence and AutoML Engine steps first.")
+        st.stop()
+
+    def pdf_header_footer(canvas, doc):
+        canvas.saveState()
+        canvas.setFont("Helvetica-Bold", 10)
+        canvas.drawString(40, 800, "AutoDFit AI Analytics Platform")
+        canvas.setFont("Helvetica", 9)
+        canvas.drawRightString(550, 20, f"Page {canvas.getPageNumber()}")
+        canvas.restoreState()
+
+    def generate_pdf_buffer():
+        # Create temp directory for images
+        tmpdir = tempfile.mkdtemp()
+        styles = getSampleStyleSheet()
+        story = []
+        # Cover
+        story.append(Spacer(1, 140))
+        story.append(Paragraph("AutoDFit AI Intelligence Report", styles["Title"]))
+        story.append(Paragraph(f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", styles["Normal"]))
+        story.append(PageBreak())
+        # TOC
+        story.append(Paragraph("Table of Contents", styles["Heading1"]))
+        for item in ["1. Executive Summary", "2. Dataset Overview", "3. Model Performance", "4. Visual Analytics", "5. Explainability", "6. Genetic Optimization", "7. Conclusion"]:
+            story.append(Paragraph(item, styles["Normal"]))
+        story.append(PageBreak())
+        # Executive summary
+        story.append(Paragraph("1. Executive Summary", styles["Heading1"]))
+        try:
+            best_name = st.session_state.best_model_name
+            best_score = st.session_state.scores.get(best_name, None)
+            story.append(Paragraph(f"Best model: {best_name}", styles["Normal"]))
+            story.append(Paragraph(f"Best score: {best_score}", styles["Normal"]))
+        except Exception:
+            story.append(Paragraph("Best model: N/A", styles["Normal"]))
+        story.append(PageBreak())
+        # Dataset overview
+        df = st.session_state.df
+        rows, cols = df.shape
+        missing = int(df.isnull().sum().sum())
+        story.append(Paragraph("2. Dataset Overview", styles["Heading1"]))
+        story.append(Paragraph(f"Rows: {rows}", styles["Normal"]))
+        story.append(Paragraph(f"Columns: {cols}", styles["Normal"]))
+        story.append(Paragraph(f"Missing cells: {missing}", styles["Normal"]))
+        story.append(PageBreak())
+        # Model performance table
+        story.append(Paragraph("3. Model Performance", styles["Heading1"]))
+        table_data = [["Model", "Score (%)"]]
+        for m, s in st.session_state.scores.items():
+            try:
+                table_data.append([m, f"{float(s)*100:.2f}"])
+            except Exception:
+                table_data.append([m, "N/A"])
+        tbl = Table(table_data)
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.black),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+            ("ALIGN", (1,1), (-1,-1), "CENTER")
+        ]))
+        story.append(tbl)
+        story.append(PageBreak())
+        # Visual analytics (heatmap)
+        story.append(Paragraph("4. Visual Analytics", styles["Heading1"]))
+        corr = safe_corr(df)
+        if corr is not None and not corr.empty:
+            heatpath = os.path.join(tmpdir, "heatmap.png")
+            plt.figure(figsize=(6,4))
+            sns.heatmap(corr, cmap="coolwarm")
+            plt.tight_layout()
+            plt.savefig(heatpath)
+            plt.close()
+            story.append(RLImage(heatpath, width=400, height=300))
+        else:
+            story.append(Paragraph("Correlation heatmap unavailable.", styles["Normal"]))
+        story.append(PageBreak())
+        # Explainability (feature importance & SHAP if available)
+        story.append(Paragraph("5. Explainability", styles["Heading1"]))
+        try:
+            best_name = st.session_state.best_model_name
+            best_obj = st.session_state.trained_models.get(best_name)
+            if hasattr(best_obj, "feature_importances_"):
+                featpath = os.path.join(tmpdir, "feat.png")
+                plt.figure(figsize=(6,3))
+                plt.bar(range(len(best_obj.feature_importances_)), best_obj.feature_importances_)
+                plt.tight_layout()
+                plt.savefig(featpath)
+                plt.close()
+                story.append(RLImage(featpath, width=400, height=250))
+        except Exception:
+            story.append(Paragraph("Feature importance unavailable.", styles["Normal"]))
+        # SHAP image if cached
+        try:
+            shappath = os.path.join(tmpdir, "shap.png")
+            # Try a lightweight SHAP generation (sample)
+            df_local = st.session_state.df
+            target_col = st.session_state.get("target_col")
+            X_df = df_local.drop(columns=[target_col])
+            # sample small
+            sample_df = X_df.sample(min(50, len(X_df))) if len(X_df) > 0 else X_df
+            try:
+                pre = st.session_state.preprocessor
+                sample = pre.transform(sample_df)
+                explainer = shap.Explainer(st.session_state.trained_models[st.session_state.best_model_name], sample[:min(20, sample.shape[0])])
+                shap_vals = explainer(sample[:min(20, sample.shape[0])], check_additivity=False)
+                plt.figure(figsize=(6,4))
+                shap.summary_plot(shap_vals, sample[:min(20, sample.shape[0])], show=False)
+                plt.tight_layout()
+                plt.savefig(shappath)
+                plt.close()
+                story.append(RLImage(shappath, width=400, height=250))
+            except Exception:
+                story.append(Paragraph("SHAP plot unavailable (sample too small or model incompatible).", styles["Normal"]))
+        except Exception:
+            story.append(Paragraph("SHAP generation failed.", styles["Normal"]))
+
+        story.append(PageBreak())
+        # GA
+        story.append(Paragraph("6. Genetic Optimization", styles["Heading1"]))
+        bi = st.session_state.get("best_individual")
+        if bi is not None:
+            story.append(Paragraph(f"Selected features (count): {int(sum(bi))}", styles["Normal"]))
+        else:
+            story.append(Paragraph("GA not executed or no result.", styles["Normal"]))
+        story.append(PageBreak())
+        # Conclusion
+        story.append(Paragraph("7. Conclusion", styles["Heading1"]))
+        story.append(Paragraph("AutoDFit provides an automated pipeline for dataset evaluation, model comparison, optimization and explainability.", styles["Normal"]))
+        # Build PDF into BytesIO
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, rightMargin=40, leftMargin=40, topMargin=60, bottomMargin=40)
+        doc.build(story, onFirstPage=pdf_header_footer, onLaterPages=pdf_header_footer)
+        buf.seek(0)
+        # cleanup tmpdir
+        try:
+            for f in os.listdir(tmpdir):
+                os.remove(os.path.join(tmpdir, f))
+            os.rmdir(tmpdir)
+        except Exception:
+            pass
+        return buf
+
+    if st.button("Generate & Download full PDF report"):
+        with st.spinner("Building PDF report..."):
+            try:
+                pdf_buf = generate_pdf_buffer()
+                st.download_button("Download Report (PDF)", data=pdf_buf, file_name="AutoDFit_Report.pdf", mime="application/pdf")
+            except Exception as e:
+                st.error("PDF generation failed: " + str(e))
+
+# End of app.py
