@@ -4,8 +4,4 @@ numpy==1.24.4
 scikit-learn==1.2.2
 matplotlib==3.7.2
 seaborn==0.13.2
-shap==0.42.1
 reportlab==4.0.0
-deap==1.4.3
-joblib==1.2.0
-cloudpickle==2.2.1
