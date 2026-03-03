@@ -1,488 +1,690 @@
-# app.py — AutoDFit (final, production-ready)
-# NOTE: This code is defensive and ready to run in an environment with the recommended
-# packages installed (see requirements.txt below). Set Python runtime to 3.11 on your host.
-
+# app.py — AutoDFit (production-ready single-file)
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import io
-import os
-import pickle
-import tempfile
-from datetime import datetime
+import time
 import random
+import pickle
+import os
+from datetime import datetime
+from typing import Tuple, Dict, Any, List
 
-from sklearn.model_selection import train_test_split
-from sklearn.impute import SimpleImputer
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import OrdinalEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
-
 from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC, SVR
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-
 from sklearn.metrics import accuracy_score, r2_score, confusion_matrix, roc_curve, auc
 
-# GA (deap) imports will be used lazily if user enables GA
-try:
-    from deap import base, creator, tools, algorithms
-    DEAP_AVAILABLE = True
-except Exception:
-    DEAP_AVAILABLE = False
+# Report generation
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak, Table, TableStyle
+)
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 
 # ---------------------------
-# Page config + minimal safe CSS
+# UI: fonts + styles
 # ---------------------------
 st.set_page_config(page_title="AutoDFit", layout="wide", initial_sidebar_state="expanded")
 
-st.markdown("""
-<style>
-/* App background & typography */
-.stApp { background-color: #0b1220; color: #e6eef8; }
-/* title style */
-.autodfit-title { text-align:center; font-size:36px; font-weight:700;
-  background: linear-gradient(90deg,#06b6d4,#8b5cf6);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-top:6px; }
-/* subtitle */
-.autodfit-sub { text-align:center; color:#9fb0d6; margin-bottom:18px; }
-/* metrics */
-[data-testid="stMetric"] { background: #0f1724; border: 1px solid #1f2a44; border-radius:10px; padding:8px; }
-/* sidebar */
-section[data-testid="stSidebar"] { background-color:#071226; color:#cfe6ff; }
-/* buttons */
-.stButton>button { background: linear-gradient(90deg,#06b6d4,#8b5cf6); color:white; border-radius:8px; padding:8px 14px; }
-</style>
-""", unsafe_allow_html=True)
+# Inject CSS for fonts and theme
+st.markdown(
+    """
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+      html, body, [class*="css"]  { font-family: 'Inter', sans-serif; }
+      .title { font-weight:700; color: #0f172a; }
+      .metric-big { font-size: 1.1rem; }
+      .card { background: linear-gradient(180deg,#ffffff,#fbfbff); padding:14px; border-radius:12px;
+              box-shadow: 0 6px 18px rgba(16,24,40,0.06); }
+      .small-muted { color: #6b7280; font-size:0.9rem; }
+      /* dark theme toggle hint - doesn't force system dark, just colors some elements */
+      .dark .card { background: #0b1220; color: #e6eef8; }
+      .spinner-svg {width:44px; height:44px;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-st.markdown('<div class="autodfit-title">AutoDFit</div>', unsafe_allow_html=True)
-st.markdown('<div class="autodfit-sub">AI Dataset Intelligence — AutoML · Explainability · Report</div>', unsafe_allow_html=True)
+# small animated header
+st.markdown(
+    """
+    <div style="display:flex; align-items:center; gap:18px">
+      <div style="width:70px">
+        <svg viewBox="0 0 120 40" class="spinner-svg">
+          <defs>
+            <linearGradient id="g" x1="0" x2="1">
+              <stop offset="0%" stop-color="#00F5FF"/>
+              <stop offset="100%" stop-color="#7B61FF"/>
+            </linearGradient>
+          </defs>
+          <circle cx="20" cy="20" r="12" fill="url(#g)">
+            <animate attributeName="r" values="10;14;10" dur="1.8s" repeatCount="indefinite"/>
+          </circle>
+        </svg>
+      </div>
+      <div>
+        <h1 class="title">AutoDFit — Dataset Intelligence</h1>
+        <div class="small-muted">Dataset fitness, separability, recommendation, model comparison & professional report</div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ---------------------------
-# Sidebar options
+# Sidebar controls
 # ---------------------------
 with st.sidebar:
     st.header("Options")
-    ENABLE_SHAP = st.checkbox("Enable SHAP explainability (sampled)", value=True)
-    ENABLE_GA = st.checkbox("Run Genetic Feature Optimization (slow)", value=False)
-    GA_POP = st.slider("GA population (if enabled)", 6, 30, 10, 2)
-    GA_GEN = st.slider("GA generations (if enabled)", 3, 10, 5, 1)
-    st.write("---")
-    st.write("Tip: use dataset <= 10k rows for responsive runs. SHAP & GA are heavy on CPU.")
+    enable_ga = st.checkbox("Enable Genetic Feature Search (sampled)", value=False)
+    ga_pop = st.slider("GA population", min_value=6, max_value=30, value=10, step=2)
+    ga_gen = st.slider("GA generations", min_value=2, max_value=8, value=4, step=1)
+    enable_pdf_images = st.checkbox("Include visual analytics in PDF", value=True)
+    dark_ui = st.checkbox("Dark UI (visual hint)", value=False)
+    st.write("Note: keep datasets moderate (<= 50k rows) for responsive experience.")
+
+# small toggle effect for dark (only affects cards via applied class)
+if dark_ui:
+    st.markdown("<script>document.body.classList.add('dark')</script>", unsafe_allow_html=True)
+else:
+    st.markdown("<script>document.body.classList.remove('dark')</script>", unsafe_allow_html=True)
 
 # ---------------------------
-# File upload
+# Utility functions
 # ---------------------------
-uploaded = st.file_uploader("Upload CSV (the target column will be selected next)", type=["csv"])
-if uploaded is None:
-    st.info("Upload a CSV to begin. Try Iris or Titanic for a quick demo.")
-    st.stop()
 
-# safe CSV load
-@st.cache_data
-def load_csv(file) -> pd.DataFrame:
-    return pd.read_csv(file)
-
-try:
-    df = load_csv(uploaded)
-except Exception as e:
-    st.error("Failed to read CSV: " + str(e))
-    st.stop()
-
-# Quick dataset overview
-rows, cols = df.shape
-missing_cells = int(df.isnull().sum().sum())
-st.header("Dataset overview")
-c1, c2, c3 = st.columns(3)
-c1.metric("Rows", rows)
-c2.metric("Columns", cols)
-c3.metric("Missing cells", missing_cells)
-st.dataframe(df.head(200))
-
-# Target selection
-target = st.selectbox("Select the target (label) column", df.columns.tolist())
-
-# Basic health score
-total_cells = df.size if df.size > 0 else 1
-completeness = (1 - missing_cells/total_cells) * 100
-uniqueness = (df.nunique().sum() / total_cells) * 100
-quality_score = round(0.7 * completeness + 0.3 * uniqueness, 2)
-st.write(f"Dataset health score: **{quality_score}%**")
-
-# derive X, y
-X_df = df.drop(columns=[target])
-y_ser = df[target].copy()
-
-# Detect problem type (heuristic)
-def detect_problem_type(y: pd.Series) -> str:
-    # If dtype object or <= 20 unique values -> classification (heuristic)
-    if y.dtype == object:
-        return "classification"
+def safe_read_csv(uploaded_file) -> pd.DataFrame:
     try:
-        nunique = y.nunique()
-        if nunique <= 20:
-            # if numeric but integer-like and few classes -> classification
-            return "classification"
+        df = pd.read_csv(uploaded_file)
+        return df
+    except Exception as e:
+        st.error(f"Failed to read CSV: {e}")
+        st.stop()
+
+def normalize01(x: float, minv: float, maxv: float) -> float:
+    if np.isnan(x) or maxv == minv:
+        return 0.0
+    return float((x - minv) / (maxv - minv))
+
+# ---------------------------
+# Core analytics functions
+# ---------------------------
+
+def compute_basic_stats(df: pd.DataFrame) -> Dict[str, Any]:
+    rows, cols = df.shape
+    missing_cells = int(df.isnull().sum().sum())
+    total = df.size if df.size > 0 else 1
+    completeness = (1 - missing_cells / total)
+    uniqueness = (df.nunique().sum() / total)
+    return {"rows": rows, "cols": cols, "missing_cells": missing_cells,
+            "completeness": completeness, "uniqueness": uniqueness}
+
+def separability_classification(X: np.ndarray, y: np.ndarray) -> float:
+    # centroid distance ratio (inter / intra)
+    dfX = np.array(X)
+    labels = np.array(y)
+    classes = np.unique(labels)
+    centroids = []
+    spreads = []
+    for c in classes:
+        mask = labels == c
+        data = dfX[mask]
+        if data.shape[0] == 0:
+            centroids.append(np.zeros(dfX.shape[1]))
+            spreads.append(0.0)
+            continue
+        centroid = np.mean(data, axis=0)
+        centroids.append(centroid)
+        d = np.linalg.norm(data - centroid, axis=1)
+        spreads.append(np.mean(d) if len(d) > 0 else 0.0)
+    intra = np.mean(spreads) if len(spreads) > 0 else 0.0
+    inter_dists = []
+    for i in range(len(centroids)):
+        for j in range(i + 1, len(centroids)):
+            inter_dists.append(np.linalg.norm(centroids[i] - centroids[j]))
+    inter = np.mean(inter_dists) if len(inter_dists) > 0 else 0.0
+    if intra == 0:
+        return float(inter)
+    return float(inter / (intra + 1e-12))
+
+def separability_regression(X: np.ndarray, y: np.ndarray) -> float:
+    # mean absolute correlation of features with target (post-preprocessing)
+    try:
+        arrX = np.array(X)
+        yv = np.array(y).astype(float)
+        corrs = []
+        for i in range(arrX.shape[1]):
+            col = arrX[:, i].astype(float)
+            if np.std(col) == 0 or np.std(yv) == 0:
+                corrs.append(0.0)
+                continue
+            corr = np.corrcoef(col, yv)[0, 1]
+            corrs.append(abs(corr))
+        return float(np.nanmean(corrs))
     except Exception:
-        pass
-    # fallback: regression if float-like or many unique values
-    return "regression"
+        return 0.0
 
-problem_type = detect_problem_type(y_ser)
-st.success(f"Detected problem type: **{problem_type}** (heuristic)")
+def interaction_density(X_df: pd.DataFrame, threshold: float = 0.7) -> float:
+    # fraction of strong absolute correlations among numeric features
+    num = X_df.select_dtypes(include=[np.number])
+    if num.shape[1] < 2:
+        return 0.0
+    corr = num.corr().abs()
+    # count pairs upper triangle excluding diagonal
+    n = corr.shape[0]
+    total_pairs = n * (n - 1) / 2
+    strong = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            if corr.iat[i, j] >= threshold:
+                strong += 1
+    return float(strong / total_pairs) if total_pairs > 0 else 0.0
 
-# Preprocessing pipeline: numeric -> impute+scale ; categorical -> ordinal encoder (handles unseen)
+def imbalance_penalty(y: pd.Series) -> float:
+    # 0 if perfectly balanced, higher if imbalanced (0..1)
+    counts = y.value_counts(normalize=True)
+    if counts.empty:
+        return 0.0
+    max_share = counts.max()
+    # penalty is relative to 1 / num_classes
+    ideal = 1.0 / len(counts)
+    penalty = max(0.0, (max_share - ideal) / (1 - ideal))  # normalized 0..1
+    return float(penalty)
+
+def noise_index_model_based(model, X_train, y_train, cv=4, scoring=None) -> float:
+    # train score vs cross-validation mean -> difference indicates noise/overfit
+    try:
+        model.fit(X_train, y_train)
+        train_score = (accuracy_score(y_train, model.predict(X_train)) if scoring == "accuracy" else
+                       r2_score(y_train, model.predict(X_train)) if scoring == "r2" else None)
+    except Exception:
+        train_score = None
+    try:
+        if scoring == "accuracy":
+            cv_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring="accuracy", n_jobs=1)
+            cv_mean = float(np.nanmean(cv_scores))
+        elif scoring == "r2":
+            cv_scores = cross_val_score(model, X_train, y_train, cv=cv, scoring="r2", n_jobs=1)
+            cv_mean = float(np.nanmean(cv_scores))
+        else:
+            cv_mean = None
+    except Exception:
+        cv_mean = None
+    if train_score is None or cv_mean is None:
+        return 0.0
+    return float(abs(train_score - cv_mean))
+
+def compute_efficiency(model, X_train, y_train, X_test, y_test, problem_type: str) -> Tuple[float, float]:
+    # returns (score, train_time_seconds)
+    t0 = time.time()
+    try:
+        model.fit(X_train, y_train)
+    except Exception:
+        return float("nan"), float("nan")
+    t1 = time.time()
+    train_time = t1 - t0
+    try:
+        preds = model.predict(X_test)
+        score = accuracy_score(y_test, preds) if problem_type == "classification" else r2_score(y_test, preds)
+    except Exception:
+        score = float("nan")
+    return float(score), float(train_time)
+
+# ---------------------------
+# File upload and preprocessing
+# ---------------------------
+uploaded = st.file_uploader("Upload CSV dataset", type=["csv"])
+if not uploaded:
+    st.info("Upload a CSV to start. Example datasets: Iris, Titanic, Diabetes, etc.")
+    st.stop()
+
+df = safe_read_csv(uploaded)
+
+# show basic dataset overview
+stats = compute_basic_stats(df)
+st.header("Dataset Overview")
+col1, col2, col3 = st.columns(3)
+col1.metric("Rows", stats["rows"])
+col2.metric("Columns", stats["cols"])
+col3.metric("Missing cells", stats["missing_cells"])
+st.write(f"Dataset completeness: **{stats['completeness']*100:.2f}%**, uniqueness indicator: **{stats['uniqueness']*100:.2f}%**")
+st.dataframe(df.head(8))
+
+# target selection
+target_col = st.selectbox("Select target column", df.columns, index=len(df.columns)-1)
+X_df = df.drop(columns=[target_col]).copy()
+y_ser = df[target_col].copy()
+
+# detect problem
+is_classification = (y_ser.dtype == "object") or (y_ser.nunique() <= 20 and y_ser.dtype != float)
+problem_type = "classification" if is_classification else "regression"
+st.success(f"Detected problem type: {problem_type}")
+
+# separate numeric/categorical columns
 num_cols = X_df.select_dtypes(include=[np.number]).columns.tolist()
 cat_cols = X_df.select_dtypes(exclude=[np.number]).columns.tolist()
 
+# build preprocessor
 transformers = []
-if len(num_cols) > 0:
-    num_pipeline = Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())])
-    transformers.append(("num", num_pipeline, num_cols))
+if num_cols:
+    transformers.append(("num", Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]), num_cols))
+if cat_cols:
+    transformers.append(("cat", Pipeline([("imputer", SimpleImputer(strategy="most_frequent")),
+                                          ("enc", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1))]), cat_cols))
+from sklearn.compose import ColumnTransformer
+preprocessor = ColumnTransformer(transformers, remainder="drop", sparse_threshold=0)
 
-if len(cat_cols) > 0:
-    cat_pipeline = Pipeline([
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        ("enc", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1))
-    ])
-    transformers.append(("cat", cat_pipeline, cat_cols))
-
-if len(transformers) == 0:
-    st.error("No features found (all columns may be non-usable after dropping target).")
-    st.stop()
-
-preprocessor = ColumnTransformer(transformers, remainder="drop")
-
-# Train/test split + preprocess
-with st.spinner("Splitting and preprocessing..."):
-    try:
-        X_train_df, X_test_df, y_train, y_test = train_test_split(X_df, y_ser, test_size=0.2, random_state=42, shuffle=True)
-    except Exception as e:
-        st.error("train_test_split failed: " + str(e))
-        st.stop()
-
+# split
+with st.spinner("Splitting and preprocessing data..."):
+    X_train_df, X_test_df, y_train, y_test = train_test_split(X_df, y_ser, test_size=0.2, random_state=42, stratify=y_ser if is_classification else None)
     try:
         X_train = preprocessor.fit_transform(X_train_df)
         X_test = preprocessor.transform(X_test_df)
     except Exception as e:
-        st.error("Preprocessing failed: " + str(e))
+        st.error(f"Preprocessing failed: {e}")
         st.stop()
 
-# Model training function (kept light)
-def build_and_train(X_tr, X_te, y_tr, y_te, problem):
-    if problem == "classification":
-        candidates = {
-            "Logistic": LogisticRegression(max_iter=300),
-            "RandomForest": RandomForestClassifier(n_estimators=80),
-            "SVM": SVC(probability=True),
-            "KNN": KNeighborsClassifier(),
-            "DecisionTree": DecisionTreeClassifier()
-        }
+# compute structural metrics
+st.header("Structural Analysis")
+sep = separability_classification(X_train, y_train) if is_classification else separability_regression(X_train, y_train)
+interaction = interaction_density(X_train_df)
+imb_pen = imbalance_penalty(y_train) if is_classification else 0.0
+
+st.metric("Data separability", f"{sep:.3f}")
+st.metric("Interaction density", f"{interaction:.3f}")
+if is_classification:
+    st.metric("Imbalance penalty", f"{imb_pen:.3f}")
+
+# noise index using a light base model
+st.subheader("Noise & Stability")
+if is_classification:
+    base_model = DecisionTreeClassifier()
+    scoring = "accuracy"
+else:
+    base_model = DecisionTreeRegressor()
+    scoring = "r2"
+noise = noise_index_model_based(base_model, X_train, y_train, cv=4, scoring=scoring)
+st.write("Noise index (|train - CV|):", f"{noise:.3f}")
+
+# ---------------------------
+# Dataset Fitness Score (formal)
+# ---------------------------
+st.header("Dataset Fitness Score")
+# normalize components to 0..1
+# completeness and uniqueness from stats
+comp = stats["completeness"]
+uniq = stats["uniqueness"]
+# separability normalization: map typical ranges to 0..1
+if is_classification:
+    # centroid ratio: values can be >1; we clip scale by mapping 0..3 -> 0..1 (3+ is strong)
+    sep_norm = min(sep / 3.0, 1.0)
+else:
+    # regression separability (mean abs corr) already in 0..1 range
+    sep_norm = min(sep, 1.0)
+
+interaction_pen = interaction  # higher interaction density is a penalty (redundancy)
+noise_pen = min(noise / 0.5, 1.0)  # normalize assuming 0.5+ is very noisy
+imbalance_pen_norm = imb_pen
+
+# define weights
+weights = {
+    "completeness": 0.22,
+    "separability": 0.28,
+    "uniqueness": 0.12,
+    "interaction": -0.10,  # penalty -> subtract
+    "noise": -0.18,        # penalty
+    "imbalance": -0.10     # penalty
+}
+# compute weighted sum (clamp)
+fitness = (weights["completeness"] * comp +
+           weights["separability"] * sep_norm +
+           weights["uniqueness"] * uniq +
+           weights["interaction"] * (1 - interaction_pen) +  # convert redundancy to positive
+           weights["noise"] * (1 - noise_pen) +
+           weights["imbalance"] * (1 - imbalance_pen_norm))
+
+# map fitness to 0..100
+fitness_pct = float(np.clip((fitness + 0.5) * 100, 0.0, 100.0))  # shift so approx mid->50
+st.metric("Dataset fitness score", f"{fitness_pct:.2f}%")
+st.write("Interpretation: 0–40% (poor), 40–70% (moderate), 70–100% (good)")
+
+# show a radar-like summary
+with st.expander("Detailed metric breakdown"):
+    st.write({
+        "completeness": round(comp, 4),
+        "separability_norm": round(sep_norm, 4),
+        "uniqueness": round(uniq, 4),
+        "interaction_density": round(interaction_pen, 4),
+        "noise_index": round(noise_pen, 4),
+        "imbalance_penalty": round(imbalance_pen_norm, 4)
+    })
+
+# ---------------------------
+# Model recommendation engine
+# ---------------------------
+st.header("Model Recommendation & Auto Training")
+# Simple data-driven rules
+recommendation = "RandomForest (default)"
+if is_classification:
+    if sep_norm > 0.66 and noise_pen < 0.15:
+        recommendation = "Logistic Regression / Linear"
+    elif interaction > 0.6:
+        recommendation = "Regularized tree-based (RandomForest)"
+    elif stats["rows"] < 1000:
+        recommendation = "SVM / KNN (small dataset)"
     else:
-        candidates = {
-            "Linear": LinearRegression(),
-            "RandomForest": RandomForestRegressor(n_estimators=80),
-            "SVR": SVR(),
-            "KNN": KNeighborsRegressor(),
-            "DecisionTree": DecisionTreeRegressor()
-        }
+        recommendation = "RandomForest / Ensemble"
+else:
+    if sep_norm > 0.6:
+        recommendation = "Linear Regression (or regularized)"
+    elif stats["cols"] > stats["rows"]/2:
+        recommendation = "Regularized model (Ridge/Lasso) or tree-based"
+    else:
+        recommendation = "RandomForest Regressor"
 
-    scores = {}
-    trained = {}
-    for name, m in candidates.items():
-        try:
-            m.fit(X_tr, y_tr)
-            preds = m.predict(X_te)
-            score = (accuracy_score(y_te, preds) if problem == "classification" else r2_score(y_te, preds))
-            scores[name] = float(score)
-            trained[name] = m
-        except Exception:
-            scores[name] = float("nan")
-            trained[name] = m
-    return scores, trained
+st.info(f"Recommended model family: **{recommendation}** — (based on separability, size, interactions, noise)")
 
-with st.spinner("Training candidate models..."):
-    scores, trained_models = build_and_train(X_train, X_test, y_train, y_test, problem_type)
+# model set
+if is_classification:
+    model_pool = {
+        "LogisticRegression": LogisticRegression(max_iter=300),
+        "RandomForest": RandomForestClassifier(n_estimators=100),
+        "SVM": SVC(probability=True),
+        "KNN": KNeighborsClassifier(),
+        "DecisionTree": DecisionTreeClassifier()
+    }
+else:
+    model_pool = {
+        "LinearRegression": LinearRegression(),
+        "RandomForestReg": RandomForestRegressor(n_estimators=100),
+        "SVR": SVR(),
+        "KNNReg": KNeighborsRegressor(),
+        "DecisionTreeReg": DecisionTreeRegressor()
+    }
 
-# leaderboard
-leader = pd.DataFrame(list(scores.items()), columns=["Model", "Score"])
-leader = leader.sort_values(by="Score", ascending=False, key=lambda col: col.fillna(-9999)).reset_index(drop=True)
+# train & measure efficiency
+results = []
+st.write("Training selected models and computing efficiency (score + time)...")
+progress_text = "Training models..."
+my_bar = st.progress(0)
+n_models = len(model_pool)
+i = 0
+for name, mod in model_pool.items():
+    i += 1
+    my_bar.progress(int(i / n_models * 100))
+    score, ttime = compute_efficiency(mod, X_train, y_train, X_test, y_test, problem_type=problem_type)
+    results.append({"model": name, "score": score, "train_time_s": ttime})
+my_bar.empty()
+
+results_df = pd.DataFrame(results)
+results_df["efficiency"] = results_df.apply(lambda r: (r["score"] / (r["train_time_s"] + 1e-6)) if (not np.isnan(r["score"]) and not np.isnan(r["train_time_s"])) else np.nan, axis=1)
+results_df = results_df.sort_values("score", ascending=False).reset_index(drop=True)
 st.subheader("Model leaderboard")
-st.dataframe(leader.style.format({"Score": "{:.4f}"}))
+st.dataframe(results_df.style.format({"score": "{:.4f}", "train_time_s": "{:.2f}", "efficiency": "{:.4f}"}))
 
-if leader.shape[0] == 0 or leader["Score"].isnull().all():
-    st.error("No model produced valid results.")
-    st.stop()
+# best model selection
+best_row = results_df.iloc[0]
+best_model_name = best_row["model"]
+best_model_obj = model_pool[best_model_name]
+# retrain best model fully on training data (already trained in compute_efficiency, but ensure fit)
+try:
+    best_model_obj.fit(X_train, y_train)
+except Exception:
+    pass
 
-best_name = leader.loc[0, "Model"]
-best_score = leader.loc[0, "Score"]
-best_model = trained_models.get(best_name)
+st.metric("Best model", f"{best_model_name}", f"Score: {best_row['score']:.4f}")
 
-st.metric("Best model", best_name, f"{(best_score*100):.2f}%" if not np.isnan(best_score) else "N/A")
-
-# model comparison bar chart
-st.subheader("Model comparison")
-fig, ax = plt.subplots(figsize=(7, 3))
-vals = [0.0 if (pd.isna(v) or v is None) else v * 100 for v in leader["Score"].tolist()]
-ax.bar(leader["Model"], vals)
-ax.set_ylabel("Score (%)")
-ax.set_ylim(bottom=0)
+# visual comparison chart
+fig = plt.figure(figsize=(7, 3))
+plt.bar(results_df["model"], results_df["score"] * (100 if problem_type == "classification" else 1))
+plt.ylabel("Score" + (" (percent)" if problem_type == "classification" else " (R2)"))
 plt.xticks(rotation=20)
+plt.tight_layout()
 st.pyplot(fig)
 plt.close(fig)
 
-# classification evaluation plots
+# ---------------------------
+# Model evaluation visuals
+# ---------------------------
+st.header("Model Evaluation")
 if problem_type == "classification":
-    st.subheader("Evaluation — confusion matrix & ROC (best model)")
     try:
-        preds = best_model.predict(X_test)
+        preds = best_model_obj.predict(X_test)
         cm = confusion_matrix(y_test, preds)
-        fig_cm, ax = plt.subplots(figsize=(4, 3))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
-        ax.set_xlabel("Predicted")
-        ax.set_ylabel("Actual")
+        fig_cm = plt.figure(figsize=(4, 3))
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
         st.pyplot(fig_cm)
         plt.close(fig_cm)
     except Exception:
-        st.warning("Confusion matrix unavailable.")
-
-    # ROC if probabilities available
-    if hasattr(best_model, "predict_proba"):
+        st.info("Confusion matrix unavailable for this model.")
+    # ROC if prob available
+    if hasattr(best_model_obj, "predict_proba"):
         try:
-            probs = best_model.predict_proba(X_test)
-            # choose class 1 if binary else use first class's probability for ROC
-            if probs.shape[1] == 2:
-                probs1 = probs[:, 1]
-                fpr, tpr, _ = roc_curve(y_test, probs1)
-                roc_auc = auc(fpr, tpr)
-                fig_roc, ax = plt.subplots(figsize=(4, 3))
-                ax.plot(fpr, tpr, label=f"AUC={roc_auc:.2f}")
-                ax.plot([0, 1], [0, 1], "--", color="grey")
-                ax.legend()
-                st.pyplot(fig_roc)
-                plt.close(fig_roc)
+            probs = best_model_obj.predict_proba(X_test)[:, 1]
+            fpr, tpr, _ = roc_curve(y_test, probs)
+            aucv = auc(fpr, tpr)
+            fig_roc = plt.figure(figsize=(4, 3))
+            plt.plot(fpr, tpr, label=f"AUC={aucv:.3f}")
+            plt.plot([0, 1], [0, 1], "--", color="gray")
+            plt.legend()
+            st.pyplot(fig_roc)
+            plt.close(fig_roc)
         except Exception:
-            st.info("ROC not available for this best model/dataset.")
+            pass
+else:
+    # regression diagnostics: scatter of predicted vs actual
+    try:
+        preds = best_model_obj.predict(X_test)
+        fig_reg = plt.figure(figsize=(5, 4))
+        plt.scatter(y_test, preds, alpha=0.6)
+        plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], "--", color="gray")
+        plt.xlabel("Actual")
+        plt.ylabel("Predicted")
+        plt.title("Predicted vs Actual")
+        st.pyplot(fig_reg)
+        plt.close(fig_reg)
+    except Exception:
+        pass
 
-# feature importance if present
-st.subheader("Feature importance (if supported)")
-try:
-    if hasattr(best_model, "feature_importances_"):
-        feats = best_model.feature_importances_
-        fig_fi, ax = plt.subplots(figsize=(6, 3))
-        ax.bar(range(len(feats)), feats)
-        ax.set_xlabel("Feature (post-preprocessing index)")
+# feature importance (if available)
+st.subheader("Feature importance (if available)")
+if hasattr(best_model_obj, "feature_importances_"):
+    try:
+        fi = best_model_obj.feature_importances_
+        fig_fi = plt.figure(figsize=(6,3))
+        plt.bar(range(len(fi)), fi)
+        plt.xlabel("Feature (post-preprocess index)")
         st.pyplot(fig_fi)
         plt.close(fig_fi)
-    else:
-        st.info("This model doesn't expose `feature_importances_` (RandomForest does).")
-except Exception:
-    st.warning("Could not compute feature importance.")
+    except Exception:
+        st.info("Feature importance not displayable.")
+else:
+    st.info("Selected model does not expose feature_importances_")
 
-# SHAP explainability (optional, sampled)
-if ENABLE_SHAP:
-    st.subheader("SHAP explainability (sampled)")
-    try:
-        import shap  # lazy import since shap is heavy
-        # use small background and sample
-        background = X_train[:200] if X_train.shape[0] > 200 else X_train
-        sample = X_test[:100] if X_test.shape[0] > 100 else X_test
-        explainer = shap.Explainer(best_model, background)
-        shap_values = explainer(sample, check_additivity=False)
-        fig_shap = plt.figure(figsize=(6, 4))
-        shap.summary_plot(shap_values, sample, show=False)
-        st.pyplot(fig_shap)
-        plt.close(fig_shap)
-    except Exception as e:
-        st.warning("SHAP unavailable or failed: " + str(e))
-
-# Genetic feature optimization (optional & controlled)
+# ---------------------------
+# Genetic algorithm (simple, pure python)
+# ---------------------------
 best_individual = None
-if ENABLE_GA:
-    st.subheader("Genetic Feature Optimization (optional)")
-    if not DEAP_AVAILABLE:
-        st.warning("GA disabled because `deap` is not installed.")
+if enable_ga:
+    st.header("Genetic Feature Search (light)")
+    n_features = X_train.shape[1]
+    if n_features <= 1:
+        st.info("Not enough features for GA.")
     else:
-        n_features = X_train.shape[1]
-        if n_features <= 1:
-            st.info("Not enough features for GA.")
-        else:
-            # GA setup (small/pop-controlled through sidebar)
-            if not hasattr(creator, "FitnessMax"):
-                creator.create("FitnessMax", base.Fitness, weights=(1.0,))
-                creator.create("Individual", list, fitness=creator.FitnessMax)
-            toolbox = base.Toolbox()
-            toolbox.register("attr_bool", random.randint, 0, 1)
-            toolbox.register("individual", tools.initRepeat, creator.Individual, toolbox.attr_bool, n=n_features)
-            toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+        # simple GA impl
+        def evaluate_ind(individual):
+            sel = [i for i, v in enumerate(individual) if v == 1]
+            if len(sel) == 0:
+                return 0.0
+            try:
+                if problem_type == "classification":
+                    m = RandomForestClassifier(n_estimators=40)
+                else:
+                    m = RandomForestRegressor(n_estimators=40)
+                m.fit(X_train[:, sel], y_train)
+                pred = m.predict(X_test[:, sel])
+                return float(accuracy_score(y_test, pred) if problem_type == "classification" else r2_score(y_test, pred))
+            except Exception:
+                return 0.0
+        # init
+        pop = []
+        pop_size = ga_pop
+        for _ in range(pop_size):
+            ind = [random.choice([0,1]) for _ in range(n_features)]
+            pop.append(ind)
+        # evol
+        for gen in range(ga_gen):
+            scores_pop = [(evaluate_ind(ind), ind) for ind in pop]
+            scores_pop.sort(key=lambda x: x[0], reverse=True)
+            # keep top 40%
+            keep = int(len(pop) * 0.4) or 1
+            new_pop = [ind for _, ind in scores_pop[:keep]]
+            # fill with crossover & mutation
+            while len(new_pop) < pop_size:
+                p1 = random.choice(scores_pop)[1]
+                p2 = random.choice(scores_pop)[1]
+                # single point crossover
+                pt = random.randint(1, n_features-1)
+                child = p1[:pt] + p2[pt:]
+                # mutation
+                if random.random() < 0.15:
+                    mi = random.randint(0, n_features-1)
+                    child[mi] = 1 - child[mi]
+                new_pop.append(child)
+            pop = new_pop
+        # select best
+        scored = [(evaluate_ind(ind), ind) for ind in pop]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best_individual = scored[0][1]
+        st.write("GA selected feature count:", sum(best_individual))
+        st.write(f"Example selected indices (first 50): { [i for i,v in enumerate(best_individual) if v==1][:50] }")
 
-            def eval_ind(ind):
-                sel = [i for i, bit in enumerate(ind) if bit == 1]
-                if len(sel) == 0:
-                    return 0.0,
-                try:
-                    m = RandomForestClassifier(n_estimators=60) if problem_type == "classification" else RandomForestRegressor(n_estimators=60)
-                    m.fit(X_train[:, sel], y_train)
-                    p = m.predict(X_test[:, sel])
-                    s = accuracy_score(y_test, p) if problem_type == "classification" else r2_score(y_test, p)
-                    return float(s),
-                except Exception:
-                    return 0.0,
-
-            toolbox.register("evaluate", eval_ind)
-            toolbox.register("mate", tools.cxTwoPoint)
-            toolbox.register("mutate", tools.mutFlipBit, indpb=0.05)
-            toolbox.register("select", tools.selTournament, tournsize=3)
-
-            pop = toolbox.population(n=GA_POP)
-            with st.spinner("Running GA (this may take a while)..."):
-                algorithms.eaSimple(pop, toolbox, cxpb=0.6, mutpb=0.2, ngen=GA_GEN, verbose=False)
-            best_individual = tools.selBest(pop, 1)[0]
-            st.success(f"GA finished. Selected features count: {sum(best_individual)}")
-
-# Quick prediction interface
-st.subheader("Quick prediction (single sample)")
-if st.button("Predict first test row"):
-    try:
-        pred = best_model.predict(X_test[:1])
-        st.write("Prediction:", pred[0])
-    except Exception as e:
-        st.warning("Prediction failed: " + str(e))
+# ---------------------------
+# Download model, results & PDF report
+# ---------------------------
+st.header("Export & Report")
 
 # Download trained model
-st.subheader("Export")
 try:
-    model_bytes = pickle.dumps(best_model)
-    st.download_button("Download trained model (.pkl)", data=model_bytes, file_name="autodfit_model.pkl", mime="application/octet-stream")
+    bmodel_bytes = pickle.dumps(best_model_obj)
+    st.download_button("Download trained model (.pkl)", data=bmodel_bytes, file_name="autodfit_model.pkl", mime="application/octet-stream")
 except Exception:
-    st.info("Model could not be serialized for download.")
+    st.info("Model download unavailable for this object.")
 
-# -----------------------------
-# PDF report generation (optional)
-# -----------------------------
+# Results csv
+results_csv = results_df.to_csv(index=False).encode("utf-8")
+st.download_button("Download results CSV", data=results_csv, file_name="autodfit_results.csv", mime="text/csv")
+
+# PDF report generator
 def pdf_header_footer(canvas, doc):
     canvas.saveState()
     canvas.setFont("Helvetica-Bold", 10)
-    canvas.drawString(40, 800, "AutoDFit AI Analytics Platform")
+    canvas.drawString(40, 800, "AutoDFit — Dataset Intelligence")
     canvas.setFont("Helvetica", 9)
     canvas.drawRightString(550, 20, f"Page {canvas.getPageNumber()}")
     canvas.restoreState()
 
-def generate_pdf_report():
-    # Lazy import reportlab - if missing, raise an informative error
-    try:
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak, Table, TableStyle
-        from reportlab.lib import colors
-        from reportlab.lib.styles import getSampleStyleSheet
-    except Exception as e:
-        raise RuntimeError("reportlab not installed. PDF generation requires reportlab. " + str(e))
-
+def generate_pdf():
+    tmp_files = []
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, rightMargin=40, leftMargin=40, topMargin=60, bottomMargin=40)
+    doc = SimpleDocTemplate(buffer, rightMargin=36, leftMargin=36, topMargin=60, bottomMargin=40)
     styles = getSampleStyleSheet()
     story = []
 
-    # Cover
+    # cover
     story.append(Spacer(1, 140))
     story.append(Paragraph("AutoDFit — Analysis Report", styles["Title"]))
     story.append(Paragraph(f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}", styles["Normal"]))
     story.append(PageBreak())
 
     # TOC
-    story.append(Paragraph("Table of Contents", styles["Heading1"]))
-    for s in ["1. Executive Summary", "2. Dataset Overview", "3. Model Performance", "4. Visual Analytics", "5. Explainability", "6. Genetic Optimization", "7. Conclusion"]:
-        story.append(Paragraph(s, styles["Normal"]))
+    story.append(Paragraph("Table of Contents", styles["Heading2"]))
+    for item in ["1 Executive summary", "2 Dataset overview", "3 Structural analysis",
+                 "4 Model performance", "5 Genetic search", "6 Conclusion"]:
+        story.append(Paragraph(item, styles["Normal"]))
     story.append(PageBreak())
 
-    # Executive summary
-    story.append(Paragraph("1. Executive Summary", styles["Heading1"]))
-    story.append(Paragraph(f"Best model: {best_name}", styles["Normal"]))
-    story.append(Paragraph(f"Best score: {best_score if best_score is not None else 'N/A'}", styles["Normal"]))
+    # Exec summary
+    story.append(Paragraph("1 Executive summary", styles["Heading1"]))
+    story.append(Paragraph(f"Best model: {best_model_name}", styles["Normal"]))
+    try:
+        story.append(Paragraph(f"Best score: {best_row['score']:.4f}", styles["Normal"]))
+    except Exception:
+        pass
+    story.append(Paragraph(f"Dataset fitness: {fitness_pct:.2f}%", styles["Normal"]))
     story.append(PageBreak())
 
-    # Dataset overview
-    story.append(Paragraph("2. Dataset Overview", styles["Heading1"]))
-    story.append(Paragraph(f"Rows: {rows}", styles["Normal"]))
-    story.append(Paragraph(f"Columns: {cols}", styles["Normal"]))
-    story.append(Paragraph(f"Missing cells: {missing_cells}", styles["Normal"]))
+    # dataset overview
+    story.append(Paragraph("2 Dataset overview", styles["Heading1"]))
+    story.append(Paragraph(f"Rows: {stats['rows']}, Columns: {stats['cols']}", styles["Normal"]))
+    story.append(Paragraph(f"Missing cells: {stats['missing_cells']}", styles["Normal"]))
     story.append(PageBreak())
 
-    # Model performance table
-    story.append(Paragraph("3. Model Performance", styles["Heading1"]))
-    table_data = [["Model", "Score (%)"]]
-    for m, s in scores.items():
-        try:
-            table_data.append([m, f"{float(s)*100:.2f}"])
-        except Exception:
-            table_data.append([m, "N/A"])
+    # structural analysis
+    story.append(Paragraph("3 Structural analysis", styles["Heading1"]))
+    story.append(Paragraph(f"Separability (norm): {sep if is_classification else sep:.4f}", styles["Normal"]))
+    story.append(Paragraph(f"Interaction density: {interaction:.4f}", styles["Normal"]))
+    story.append(Paragraph(f"Noise index (|train-cv|): {noise:.4f}", styles["Normal"]))
+    story.append(PageBreak())
+
+    # model performance table + images
+    story.append(Paragraph("4 Model performance", styles["Heading1"]))
+    table_data = [["Model", "Score", "Train Time (s)"]]
+    for r in results:
+        s = r["score"]
+        tt = r["train_time_s"]
+        table_data.append([r["model"], f"{s:.4f}" if (s is not None and not np.isnan(s)) else "N/A", f"{tt:.2f}" if (tt is not None and not np.isnan(tt)) else "N/A"])
     tbl = Table(table_data)
-    tbl.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), colors.black), ("TEXTCOLOR",(0,0),(-1,0),colors.white), ("GRID",(0,0),(-1,-1),0.5,colors.grey), ("ALIGN",(1,1),(-1,-1),"CENTER")]))
+    tbl.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.grey),("TEXTCOLOR",(0,0),(-1,0),colors.whitesmoke),("GRID",(0,0),(-1,-1),0.5,colors.black)]))
     story.append(tbl)
     story.append(PageBreak())
 
-    # Visual analytics (heatmap)
-    story.append(Paragraph("4. Visual Analytics", styles["Heading1"]))
-    try:
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        tmpname = tmp.name
-        tmp.close()
-        plt.figure(figsize=(6,4))
-        sns.heatmap(df.corr(numeric_only=True), cmap="coolwarm")
-        plt.tight_layout()
-        plt.savefig(tmpname)
-        plt.close()
-        story.append(RLImage(tmpname, width=400, height=300))
-        story.append(PageBreak())
-        os.remove(tmpname)
-    except Exception:
-        story.append(Paragraph("Heatmap unavailable.", styles["Normal"]))
-        story.append(PageBreak())
+    # visual analytics (optionally include images)
+    if enable_pdf_images:
+        try:
+            # heatmap
+            plt.figure(figsize=(6,4)); sns.heatmap(df.corr(numeric_only=True), cmap="coolwarm"); plt.tight_layout()
+            fn = "tmp_heatmap.png"; plt.savefig(fn); plt.close(); tmp_files.append(fn); story.append(RLImage(fn, width=400, height=280)); story.append(PageBreak())
+        except Exception:
+            pass
 
-    # Explainability (feature importance + SHAP)
-    story.append(Paragraph("5. Explainability", styles["Heading1"]))
-    try:
-        if hasattr(best_model, "feature_importances_"):
-            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            tmpname = tmp.name
-            tmp.close()
-            plt.figure()
-            plt.bar(range(len(best_model.feature_importances_)), best_model.feature_importances_)
-            plt.tight_layout()
-            plt.savefig(tmpname)
-            plt.close()
-            story.append(RLImage(tmpname, width=400, height=250))
-            os.remove(tmpname)
-    except Exception:
-        story.append(Paragraph("Feature importance unavailable.", styles["Normal"]))
-
-    story.append(PageBreak())
-
-    # GA summary
-    story.append(Paragraph("6. Genetic Optimization", styles["Heading1"]))
-    if best_individual is not None:
-        story.append(Paragraph(f"GA selected features count: {sum(best_individual)}", styles["Normal"]))
+    # GA
+    story.append(Paragraph("5 Genetic search results", styles["Heading1"]))
+    if best_individual:
+        story.append(Paragraph(f"Selected feature count: {sum(best_individual)}", styles["Normal"]))
     else:
-        story.append(Paragraph("GA not executed or returned no result.", styles["Normal"]))
+        story.append(Paragraph("GA not executed or no result", styles["Normal"]))
     story.append(PageBreak())
 
-    # Conclusion
-    story.append(Paragraph("7. Conclusion", styles["Heading1"]))
-    story.append(Paragraph("AutoDFit automates dataset profiling, model comparison, explainability and optimization.", styles["Normal"]))
+    story.append(Paragraph("6 Conclusion", styles["Heading1"]))
+    story.append(Paragraph("AutoDFit produced dataset-level diagnostics, model comparison and an exportable package to support decisions on model deployment.", styles["Normal"]))
 
     doc.build(story, onFirstPage=pdf_header_footer, onLaterPages=pdf_header_footer)
+
+    # cleanup tmp files
+    for f in tmp_files:
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
     buffer.seek(0)
     return buffer
 
-# PDF download button (safe call)
-st.subheader("Full report")
 try:
-    pdf_buffer = generate_pdf_report()  # will raise if reportlab not installed
-    st.download_button("Download full PDF report", data=pdf_buffer, file_name="AutoDFit_Report.pdf", mime="application/pdf")
+    pdf_bytes = generate_pdf()
+    st.download_button("📄 Download Full Report (PDF)", data=pdf_bytes, file_name="AutoDFit_Report.pdf", mime="application/pdf")
 except Exception as e:
-    st.info("PDF generation unavailable: " + str(e))
+    st.warning("PDF generation failed: " + str(e))
 
-# End of app
+st.success("Analysis complete — export available above.")
